@@ -1,1 +1,151 @@
-Script for running eGPU on Intel Mac T2
+# External GPU bring-up over Thunderbolt / USB4
+
+A small, **portable** set of scripts that brings an external GPU up behind a
+Thunderbolt or USB4 tunnel on Linux.
+
+Developed on a MacBook Pro 15,1 (T2, 2018) with an AOOSTAR AG03 enclosure and
+an RTX 4080, but nothing is tied to that machine, that enclosure, that
+Thunderbolt port, or this directory. Addresses are discovered, not written
+down.
+
+
+---
+
+## Start
+
+```bash
+cd <package-directory>
+
+sudo ./1-check.sh          # what is in place, what is missing
+sudo ./1-check.sh --fix    # write the missing modprobe.d file
+sudo ./run.sh            # bring the card up
+```
+
+On a new machine, or after reinstalling, **always start with `1-check.sh`**.
+Missing files under `/etc` do not show up as a script error — they show up as
+a machine **reset**. That is why `run.sh` runs the check as a gate and
+aborts before touching hardware.
+
+If the card is not found, or several are:
+
+```bash
+./2-devices.sh             # candidates and the topology behind each
+./2-devices.sh --all       # every display controller, internal ones included
+sudo GPU=0000:07:00.0 ./run.sh
+```
+
+The whole allocation lives in memory. It is lost on reboot and when the
+enclosure loses power: power-cycle the enclosure, then `sudo ./run.sh`.
+
+---
+
+## Files, in execution order
+
+| file | role |
+|---|---|
+| `run.sh` | **entry point.** Check gate → window and BARs → link cap → GSP → driver stack → report. Runs in your terminal, does not kill the graphical session |
+| `1-check.sh` | prerequisites: tools, kernel, headers, driver, **effective** modprobe configuration, udev, cmdline, hardware, package integrity. `--fix` writes the canonical modprobe.d file, `--quiet` returns only an exit code |
+| `2-devices.sh` | list external GPU candidates and their topology. Read-only, no root needed |
+| `3-setup.sh` | root-port window and BARs — calls `4` |
+| `4-build-module.sh` | rebuild the window module for the running kernel → `5` → `6` |
+| `5-window.sh` | move the prefetchable window above 4 GB, remove and rescan the tunnel subtree |
+| `6-load-driver.sh` | block `nvidia_drm`/`nvidia_modeset`, load `nvidia`, check `nvidia-smi` |
+| `7-bar-fallback.sh` | **fallback** — `6` calls it only if BAR1 came out unassigned |
+| `8-link-cap-gsp.sh` | cautious variant: detaches through systemd and captures the kernel log. Also `--off` and `--arm-panic` |
+| `9-check-outputs.sh` | card outputs and whether GSP really started. Read-only |
+| `lib/egpu-lib.sh` | shared topology discovery. Sourced, not run |
+| `module/` | source of the window module plus its Makefile. Rebuilt on every run |
+| `logs/` | run logs |
+
+`run.sh` is what you invoke. The numbers are the position in the pipeline:
+`1`–`7` execute in order, `8`–`9` are variants and diagnostics.
+
+---
+
+## Three ordering constraints
+
+The structure of `run.sh` follows from these, and they must not be mixed up:
+
+1. **the cap comes AFTER step 5** — `remove`+`rescan` destroys and recreates
+   the device, so a cap applied earlier is lost
+2. **the cap comes BEFORE `nvidia.ko` binds** — otherwise the driver retrains
+   the link to Gen4 inside the GSP handshake window and the card falls off the
+   bus (instant reset, no kernel output)
+3. **GSP only together with the cap** — never GSP without it
+
+That is why `run.sh` inserts `NVreg_EnableGpuFirmware=0` as a safety net for
+the duration of steps 3–6 and removes it only once the cap is in place.
+
+---
+
+## What not to remove
+
+The blocks in `/etc/modprobe.d` (`blacklist nvidia*`, `install nvidia
+/bin/false`) look like leftovers but they enforce constraint 2. Without them
+udev, or any by-name loader, can bind the driver before the cap.
+
+`blacklist` and `install` are not interchangeable: `blacklist` only closes the
+modalias path, `install /bin/false` also closes loading by name and as a
+dependency. Both are needed.
+
+Modules **must** be loaded one at a time (`nvidia` → `nvidia_uvm` →
+`nvidia_modeset` → `nvidia_drm modeset=1`), because `--ignore-install` does not
+apply to dependencies — a single `modprobe nvidia_drm` would hit `/bin/false`.
+
+One trap worth watching: **no file in `modprobe.d` may set `options nvidia_drm
+modeset=0` alphabetically AFTER the one that sets `modeset=1`** — the kernel
+takes the last repeated parameter. `1-check.sh` therefore tests the effect of
+the concatenation, not file names.
+
+---
+
+## Portability
+
+- Scripts are self-locating (`SELFDIR`), so the package works from any path
+  and under any directory name.
+- No absolute path into a home directory and no user name anywhere. Logs are
+  chowned to `$SUDO_USER`.
+- **Nothing about the topology is hardcoded.** `lib/egpu-lib.sh` derives the
+  card, the bridge above it, the CPU root port, the device to remove and the
+  rescan bus from sysfs, and passes the root port to the kernel module. It
+  works regardless of Thunderbolt port, controller, or bus numbering, and it
+  recognises NVIDIA, AMD and Intel display controllers.
+- Machine-specific values go through the environment: `GPU`, `BRIDGE`,
+  `WIN_BASE`, `WIN_MB`, `REBAR_SIZE`, `CAP_SPEED`.
+- No reference monitor or captured EDID is needed; any display works.
+
+What the package cannot carry for you: kernel parameters (they need a
+bootloader edit and a reboot) and udev rules, if your distribution loads the
+driver through `RUN+=modprobe`. `1-check.sh` detects both and prints what is
+needed.
+
+---
+
+## When the monitor stays black
+
+A connector can be `connected` with a valid EDID and still show nothing.
+Reading EDID and driving a display are different things: driving it is the
+compositor's job, and the compositor has to know the output exists.
+
+`run.sh` reports this explicitly as `connected but not driven`. Remedies, in
+order of cost:
+
+1. **unplug and replug the monitor cable.** This generates a connector hotplug
+   event. If the monitor was already attached when the driver loaded, the
+   compositor may have enumerated connectors before the driver finished
+   detecting them, and it will not re-probe on its own.
+2. **restart the session** - `sudo ./run.sh --restart-ui`, which hands the
+   restart to a transient systemd unit so it survives the session it kills.
+   Costs every open window.
+
+On this machine mutter 50.1 on Wayland does pick up a hot-plugged GPU; its log
+says `Added device '/dev/dri/card0' (nvidia-drm) using atomic mode setting`.
+So a session restart is the fallback, not the first move.
+
+## Confirmed 2026-08-21
+
+- `nvidia-smi` works, RTX 4080, 16376 MiB
+- GSP running — `GSP Firmware Version: 610.43.02`
+- **display output from the card's own HDMI port**, 3840x2160, 256-byte EDID
+- P8, 22 W at idle; fans at 0 % / 47 °C is zero-RPM mode, not a fault
+- DisplayPort not working
