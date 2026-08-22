@@ -172,6 +172,35 @@ On this machine mutter 50.1 on Wayland does pick up a hot-plugged GPU; its log
 says `Added device '/dev/dri/card0' (nvidia-drm) using atomic mode setting`.
 So a session restart is the fallback, not the first move.
 
+## Vulkan / games via Proton
+
+Once the card is up, Vulkan enumerates it alongside every other GPU in the
+machine (integrated GPU, any other discrete GPU). Enumeration order is not
+guaranteed to stay stable across reboots or driver updates, and most games do
+not let you pick a GPU — they take whichever the loader hands them first. If
+that happens to be the wrong one, presentation fails outright: a swapchain
+cannot be created on a surface driven by a different GPU, which shows up as a
+crash (in Unreal Engine 4/5 titles, typically `CreateSwapChainResult failed`).
+
+To force a game onto the eGPU regardless of enumeration order, add this as a
+Steam launch option (or export it before running any other Vulkan app):
+
+```
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/nvidia_icd.json %command%
+```
+
+This restricts the Vulkan loader to the NVIDIA ICD alone, so the eGPU is the
+only device the game ever sees. Adjust the path if your distribution installs
+the ICD file elsewhere (`vulkaninfo --summary` prints the ICD path it used).
+
+Do **not** set this globally in the session environment: with the card
+unplugged, every Vulkan application would then have no GPU to enumerate at
+all. Keep it scoped to the launch option of the games that need it.
+
+If that alone does not fix presentation, some DXVK-based Proton versions also
+honour `DXVK_FILTER_DEVICE_NAME="NVIDIA GeForce RTX 4080"` (adjust to your
+card's name) as a lighter-weight alternative that still lets other ICDs load.
+
 ## Confirmed 2026-08-21
 
 - `nvidia-smi` works, RTX 4080, 16376 MiB
