@@ -117,6 +117,12 @@ hdr "4. Effective module configuration (the EFFECT matters, not file names)"
 MOD_CRIT=0      # blocks the run (reset risk)
 MOD_FIXABLE=0   # worth fixing, does not block
 
+# Asked ONCE. Three of the checks below used to run this identical command for
+# themselves. "install ... /bin/false" is tested separately, without
+# --ignore-install, because that one is asking a different question: whether the
+# block is effective at all.
+NV_PLAN=$(modprobe --dry-run --ignore-install --show-depends nvidia 2>/dev/null)
+
 # 4a. is autoload blocked?
 if modprobe --dry-run --show-depends nvidia 2>/dev/null | grep -q '^install /bin/false'; then
     pass "nvidia autoload is blocked (install ... /bin/false is effective)"
@@ -187,8 +193,7 @@ else
 fi
 
 # 4c. Is D3cold disabled?
-dpm=$(modprobe --dry-run --ignore-install --show-depends nvidia 2>/dev/null \
-      | grep -oE 'NVreg_DynamicPowerManagement=[^ "]*' | sort -u | tail -1)
+dpm=$(grep -oE 'NVreg_DynamicPowerManagement=[^ "]*' <<<"$NV_PLAN" | sort -u | tail -1)
 if [[ $dpm == "NVreg_DynamicPowerManagement=0" ]]; then
     pass "effective $dpm (no D3cold through the tunnel)"
 else
@@ -197,8 +202,7 @@ else
 fi
 
 # 4d. Is ReBAR disabled?
-if modprobe --dry-run --ignore-install --show-depends nvidia 2>/dev/null \
-   | grep -q 'NVreg_EnableResizableBar=0'; then
+if grep -q 'NVreg_EnableResizableBar=0' <<<"$NV_PLAN"; then
     pass "effective NVreg_EnableResizableBar=0"
 else
     warn "NVreg_EnableResizableBar not set to 0"

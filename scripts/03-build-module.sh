@@ -35,18 +35,13 @@ set -uo pipefail
 SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the package is self-locating
 # shellcheck source=lib/egpu-lib.sh
 source "$SELFDIR/../lib/egpu-lib.sh"
-if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run $EGPU_SCRIPTS/02-devices.sh to see what is present." >&2
-    exit 1
-fi
+egpu_resolve_or_die
 
 
 RUN=$(uname -r)
 MODDIR=$EGPU_MODULE
 # Build artifacts live outside the source tree - see module/Makefile for why.
-BUILDDIR=$(make --no-print-directory -C "$MODDIR" -s print-builddir 2>/dev/null)
-BUILDDIR=${BUILDDIR:-$EGPU_BUILD}
-KO=$BUILDDIR/egpu_rp_window.ko
+egpu_module_ko                 # sets EGPU_BUILDDIR and EGPU_KO
 WINDOW=$EGPU_SCRIPTS/04-window.sh
 DRIVER=$EGPU_SCRIPTS/05-load-driver.sh
 DEV=$EGPU_GPU
@@ -77,7 +72,7 @@ egpu_require_root
 LOGDIR=$EGPU_LOGS
 STAMP=$(egpu_stamp)
 egpu_log_open "$LOGDIR" script "$STAMP"
-trap egpu_cleanup EXIT
+trap egpu_log_flush EXIT
 
 echo "=== log: $EGPU_LOG ==="
 
@@ -96,12 +91,12 @@ fi
 echo
 echo "=== 2. Rebuilding the window module for $RUN ==="
 make -C "$MODDIR" clean all 2>&1 | tail -6 | sed 's/^/  /' || true
-printf "  artifacts: %s\n" "$BUILDDIR"
+printf "  artifacts: %s\n" "$EGPU_BUILDDIR"
 # This script runs under sudo, so hand the artifacts back to the invoking
 # user - same reason as LOGDIR above. Otherwise the next non-root build
 # cannot overwrite them.
-chown -R "${SUDO_USER:-root}:" "$BUILDDIR" 2>/dev/null || true
-vm=$(modinfo "$KO" 2>/dev/null | awk '/^vermagic:/ {print $2}')
+chown -R "${SUDO_USER:-root}:" "$EGPU_BUILDDIR" 2>/dev/null || true
+vm=$(modinfo "$EGPU_KO" 2>/dev/null | awk '/^vermagic:/ {print $2}')
 printf "  vermagic: %s\n" "${vm:-none}"
 [[ ${vm:-} == "$RUN" ]] || { echo "  ERROR: the module did not build for $RUN" >&2; exit 1; }
 

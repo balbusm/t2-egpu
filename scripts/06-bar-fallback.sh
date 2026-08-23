@@ -20,10 +20,7 @@ set -uo pipefail
 SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the package is self-locating
 # shellcheck source=lib/egpu-lib.sh
 source "$SELFDIR/../lib/egpu-lib.sh"
-if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run $EGPU_SCRIPTS/02-devices.sh to see what is present." >&2
-    exit 1
-fi
+egpu_resolve_or_die
 
 
 DEV=$EGPU_GPU
@@ -34,22 +31,15 @@ TARGET_SIZE=6                 # 2^6 MB = 64 MB
 
 LOGDIR=$EGPU_LOGS
 STAMP=$(egpu_stamp)
-# 05-load-driver calls this script while its own capture is running and exports
-# EGPU_KLOG; adopting it avoids a second "dmesg -w" on the same file.
-KLOG=${EGPU_KLOG:-$LOGDIR/kernel-$STAMP.log}
 
 egpu_require_root
 [[ -d /sys/bus/pci/devices/$DEV ]] || {
     echo "ERROR: $DEV does not exist - plug the enclosure in." >&2; exit 1; }
 
 egpu_log_open "$LOGDIR" script "$STAMP"
-trap egpu_cleanup EXIT
+trap egpu_log_flush EXIT
 
-echo "=== logs ==="
-echo "  kernel:  $KLOG"
-echo "  script:  $EGPU_LOG"
-
-egpu_klog_start "$KLOG"
+echo "=== log: $EGPU_LOG ==="
 
 # Set BAR1 to the target size if it is not already there. A bridge reset can
 # restore the previous size, which is why this runs before EVERY attempt rather
@@ -161,11 +151,9 @@ for spec in "${LEVELS[@]}"; do
     sudo modprobe nvidia
     nvidia-smi
 
-  If it hangs: the blacklist in /etc/modprobe.d keeps the driver out on the next boot
-  guarantees a clean next boot, and the log is in:
+  If it hangs: the blacklist in /etc/modprobe.d keeps the driver out of the
+  way on the next boot, so a reboot is always a clean start.
 EOF
-        echo "    $KLOG"
-        sync
         exit 0
     fi
 
@@ -176,6 +164,4 @@ echo
 echo "=============================================================="
 echo "  No escalation level managed to assign BAR1."
 echo "=============================================================="
-echo "  Log kernel: $KLOG"
-echo "  Look for 'can't assign' after the last rescan marker."
-sync
+echo "  Look for \"can't assign\" in dmesg, after the last >>> marker above."

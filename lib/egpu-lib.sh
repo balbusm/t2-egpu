@@ -256,11 +256,10 @@ egpu_usage() { awk 'NR>1 && !/^#/{exit} NR>1{sub(/^# ?/,""); print}' "$1"; }
 # run-*.log with the script-*.log and kernel-*.log of the same run guesswork.
 egpu_stamp() { printf '%s' "${EGPU_STAMP:-$(date +%Y%m%d-%H%M%S)}"; }
 
-# NOT plain "EGPU_LOG=" - these must survive being inherited. Sourcing this
-# file in a child would otherwise wipe the parent's exported value, and the
-# nesting rule below (adopt the parent's log) would never fire.
+# NOT plain "EGPU_LOG=" - it must survive being inherited. Sourcing this file
+# in a child would otherwise wipe the parent's exported value, and the nesting
+# rule below (adopt the parent's log) would never fire.
 EGPU_LOG=${EGPU_LOG:-}
-EGPU_KLOG=${EGPU_KLOG:-}
 EGPU_TEE_PID=
 
 # egpu_log_open <logdir> <prefix> [stamp]  -> sets EGPU_LOG, redirects output.
@@ -315,49 +314,17 @@ egpu_log_flush() {
     EGPU_TEE_PID=
 }
 
-# ---------------------------------------------------------------- kernel log
+# ---------------------------------------------------------------- progress
 #
-# dmesg -w into a file with a sync every 0.2 s, because on this platform
-# "fallen off the bus" presents as an instant reset with no kernel output and
-# pstore has no backend. Evidence has to be on disk before the reset.
-# Same nesting rule as egpu_log_open, for the same reason: 05-load-driver calls
-# 06-bar-fallback while its own capture is running, and two "dmesg -w" appending
-# to one file interleave every message twice. If a parent is already capturing,
-# adopt its file and start nothing.
-EGPU_BG=()
-egpu_klog_start() {
-    if [[ -n ${EGPU_KLOG:-} ]]; then
-        export EGPU_KLOG
-        return 0
-    fi
-    EGPU_KLOG=$1
-    export EGPU_KLOG
-    stdbuf -oL dmesg -w >> "$EGPU_KLOG" &  EGPU_BG+=($!)
-    ( while :; do sync; sleep 0.2; done ) & EGPU_BG+=($!)
-    sleep 1
-}
-
-egpu_bg_kill() {
-    local p
-    for p in "${EGPU_BG[@]:-}"; do
-        [[ -n $p ]] && kill "$p" 2>/dev/null
-    done
-    EGPU_BG=()
-    sync
-    return 0
-}
-
-# The standard EXIT trap. ORDER MATTERS: the background jobs inherit stdout, so
-# tee would never see EOF while they are alive. Kill them first, flush second.
-egpu_cleanup() { egpu_bg_kill; egpu_log_flush; }
-
-# A marker in the kernel log, so a post-mortem can tell which step a message
-# belongs to.
-mark() {
-    printf '\n########## %s ##########\n' "$1" >> "${EGPU_KLOG:-/dev/null}"
-    sync
-    echo ">>> $1"
-}
+# This used to also append the marker to a captured kernel log. THE CAPTURE IS
+# GONE. It ran "dmesg -w" into a file with a sync every 0.2 s so evidence would
+# survive a hard reset, which mattered while the reset was the thing being
+# diagnosed. It is not any more - cap plus GSP is verified working - and it cost
+# a permanent background job per script, a nesting rule so a nested script would
+# not start a second "dmesg -w" over the same file, and an EXIT trap whose
+# ordering had to be right or tee would never flush. For a post-mortem, dmesg
+# and "journalctl -k" hold the same messages.
+mark() { echo ">>> $1"; }
 
 # ---------------------------------------------------------------- the window
 #
@@ -368,22 +335,53 @@ mark() {
 # and 03-build-module.sh printed a third copy as a message. Running 04-window.sh
 # the way its own header documents therefore produced a 128 MB BAR1, which
 # run.sh then rejected as a failure.
+# WIN_BASE and WIN_MB describe a hole in the host address map, not the card, so
+# they keep written-down defaults.
 EGPU_WIN_BASE_DEFAULT=0x4010000000
 EGPU_WIN_MB_DEFAULT=1024
-EGPU_REBAR_SIZE_DEFAULT=8          # 2^8 MB = 256 MB
 
-# Fill in and export WIN_BASE / WIN_MB / REBAR_SIZE, honouring the environment.
+# THE BAR1 SIZE IS NOT A DEFAULT ANY MORE - IT IS READ FROM THE CARD.
+#
+# It used to be a written-down 8 (2^8 = 256 MB), which is simply what this
+# particular Ada card powers up with. So the ReBAR write was a no-op dressed as
+# a decision, and on a card with a different native BAR1 it would have been an
+# unrequested resize. Reading the control register instead means the default is
+# "leave the card at the size it asks for", and REBAR_SIZE becomes a pure
+# override - which is the only way it was ever really used: 06-bar-fallback
+# SHRINKS BAR1 when the window cannot fit it.
+#
+# The fallback below is reached only when the card cannot be asked at all - no
+# root, no card, or no ReBAR capability.
+EGPU_REBAR_SIZE_FALLBACK=8
+
+# Size code the card currently reports for a BAR - its own default until
+# something writes the control register. Needs root: this is config space.
+egpu_rebar_current() {
+    local off
+    off=$(egpu_rebar_entry "$1" "${2:-1}") || return 1
+    egpu_rebar_get "$1" "$off"
+}
+
+# Fill in and export WIN_BASE / WIN_MB / REBAR_SIZE.
+#
+# CALL THIS AFTER egpu_resolve AND AFTER THE ROOT CHECK: asking the card its
+# BAR1 size needs both. Callers that get it wrong land on the fallback, which is
+# a silent wrong answer rather than an error, so the order matters.
 egpu_window_defaults() {
     WIN_BASE=${WIN_BASE:-$EGPU_WIN_BASE_DEFAULT}
     WIN_MB=${WIN_MB:-$EGPU_WIN_MB_DEFAULT}
-    REBAR_SIZE=${REBAR_SIZE:-$EGPU_REBAR_SIZE_DEFAULT}
+    if [[ -z ${REBAR_SIZE:-} ]]; then
+        REBAR_SIZE=$(egpu_rebar_current "${EGPU_GPU:-}" 1) \
+            || REBAR_SIZE=$EGPU_REBAR_SIZE_FALLBACK
+    fi
     export WIN_BASE WIN_MB REBAR_SIZE
 }
 
 # The BAR1 size we expect once the window is in place, spelled the way lspci
-# spells it ("256M"). Derived, so overriding REBAR_SIZE does not turn a correct
-# run into a reported failure.
-egpu_bar1_expected() { printf '%dM' $(( 2 ** ${REBAR_SIZE:-$EGPU_REBAR_SIZE_DEFAULT} )); }
+# spells it ("256M"). Read from the ReBAR control register rather than from the
+# assigned BAR, because an unassigned BAR has no size to report - which is
+# exactly the state run.sh is testing for.
+egpu_bar1_expected() { printf '%dM' $(( 2 ** ${REBAR_SIZE:-$EGPU_REBAR_SIZE_FALLBACK} )); }
 
 # ---------------------------------------------------------------- BARs
 #
@@ -401,6 +399,61 @@ egpu_bar_assigned() {
     local v
     v=$(egpu_bar_base "$1" "$2") || return 1
     [[ -n $v && $v != 0x0000000000000000 ]]
+}
+
+# ---------------------------------------------------------------- topology
+#
+# Six scripts opened with the same four lines. This EXITS rather than returning:
+# every caller treated the failure as fatal. The two places that tolerate a
+# missing card - 01-check, and run.sh --off - call egpu_resolve directly.
+egpu_resolve_or_die() {
+    if ! egpu_resolve "${GPU:-}"; then
+        echo "Cannot resolve eGPU topology. Run $EGPU_SCRIPTS/02-devices.sh to see what is present." >&2
+        exit 1
+    fi
+    # Adopt what discovery found. Leaving GPU empty is worse than no answer:
+    # "lspci -s ''" matches EVERY device instead of one, which silently turns
+    # any BAR check into a multi-line answer.
+    GPU=$EGPU_GPU
+    BRIDGE=${BRIDGE:-$EGPU_BRIDGE}
+}
+
+# ---------------------------------------------------------------- the module
+#
+# module/Makefile owns the build path; ask make for it so it is stated in
+# exactly one place. Sets EGPU_BUILDDIR and EGPU_KO.
+egpu_module_ko() {
+    local d
+    d=$(make --no-print-directory -C "$EGPU_MODULE" -s print-builddir 2>/dev/null)
+    EGPU_BUILDDIR=${d:-$EGPU_BUILD}
+    EGPU_KO=$EGPU_BUILDDIR/egpu_rp_window.ko
+}
+
+# ---------------------------------------------------------------- GSP switch
+#
+# The kill switch, written as a safety net whenever the driver might bind before
+# the link cap is in place and moved aside once it is. The name sorts late in
+# modprobe.d on purpose.
+EGPU_GSPOFF=/etc/modprobe.d/zzzz-egpu-gsp-off.conf
+
+egpu_gsp_block() { printf 'options nvidia NVreg_EnableGpuFirmware=0\n' > "$EGPU_GSPOFF"; }
+
+# Moved aside, not deleted, and the suffix deliberately does not end in .conf so
+# modprobe ignores the leftover. Non-zero when there was no block to remove.
+egpu_gsp_unblock() {
+    [[ -f $EGPU_GSPOFF ]] || return 1
+    mv "$EGPU_GSPOFF" "$EGPU_GSPOFF.disabled-$(egpu_stamp)"
+}
+
+# Drop the leftovers. No "shopt -s nullglob": that is global shell state, and an
+# explicit existence test costs one line.
+egpu_gsp_clean() {
+    local f
+    for f in "$EGPU_GSPOFF".disabled-*; do
+        [[ -e $f ]] || continue
+        rm -f "$f" && ok "removed $(basename "$f")"
+    done
+    return 0
 }
 
 # ---------------------------------------------------------------- the driver
@@ -467,6 +520,64 @@ egpu_nv_card() {
         return 0
     done
     return 1
+}
+
+# Load the KMS half of the stack, and make sure /dev/nvidia-modeset exists.
+#
+# WHY THE NODE NEEDS HELP. Ubuntu creates the /dev/nvidia* nodes with
+# /sbin/ub-device-create, fired by a udev rule when nvidia BINDS to the PCI
+# device. At that moment nvidia_modeset is not loaded - it is loaded here, by
+# hand, and our own 71-nvidia.rules has the "RUN+=modprobe nvidia-modeset" line
+# removed on purpose, because auto-loading it hung the machine during bring-up.
+#
+# So nothing ever created /dev/nvidia-modeset, and NOTHING VISIBLE BROKE:
+# compute, CUDA, rendering and KMS all use other nodes. Only Vulkan opens this
+# one. It got ENOENT, the driver answered VK_ERROR_UNKNOWN, and vulkaninfo did
+# not even error - it segfaulted. That cost a full day of chasing a phantom
+# driver bug, which is why the sequence lives here once instead of twice.
+egpu_load_display_stack() {
+    local m
+    for m in nvidia_uvm nvidia_modeset; do
+        modprobe --ignore-install "$m" && ok "$m" || warn "$m failed"
+    done
+    # Idempotent, so calling it unconditionally is safe.
+    [[ -x /sbin/ub-device-create ]] && /sbin/ub-device-create 2>/dev/null || true
+    if [[ -e /dev/nvidia-modeset ]]; then
+        ok "/dev/nvidia-modeset present (Vulkan presentation needs it)"
+    elif mknod /dev/nvidia-modeset c 195 254 2>/dev/null && chmod 666 /dev/nvidia-modeset 2>/dev/null; then
+        # Major 195 is shared by nvidia, nvidia-modeset and nvidiactl (see
+        # /proc/devices): nvidiactl is minor 255, GPUs are 0..N, modeset is 254.
+        ok "/dev/nvidia-modeset created by hand"
+    else
+        bad "/dev/nvidia-modeset MISSING - Vulkan presentation will fail with VK_ERROR_UNKNOWN"
+    fi
+    # fbdev is stated even though 1 is the driver's own default: modprobe.d is
+    # concatenated and the kernel takes the last repeated parameter, so being
+    # explicit is what makes the effective configuration deterministic no matter
+    # what an older install left behind.
+    modprobe --ignore-install nvidia_drm modeset=1 fbdev=1 \
+        && ok "nvidia_drm modeset=1 fbdev=1" || warn "nvidia_drm failed"
+}
+
+# The udev rule that hands mutter a tag for the card. 09-primary-gpu and
+# 10-teardown wrote byte-identical matcher lines differing only in the tag.
+#
+# egpu_nv_card must have run.  $1 file, $2 tag, $3.. extra comment lines.
+egpu_write_mutter_tag_rule() {
+    local file=$1 tag=$2
+    shift 2
+    mkdir -p "$(dirname "$file")" || return 1
+    {
+        printf '# Written by %s\n#\n' "${0##*/}"
+        printf '# %s\n' "$@"
+        printf '#\n'
+        printf '# Matching is on PCI vendor:device, not /dev/dri/cardN: card numbering\n'
+        printf '# moves here - a USB display can take card0 and the eGPU is hot-plugged.\n'
+        printf '# It matches nothing at boot, because the card is absent until run.sh has\n'
+        printf '# set up the tunnel, so a normal boot is unaffected.\n'
+        printf 'SUBSYSTEM=="drm", ENV{DEVTYPE}=="drm_minor", ENV{DEVNAME}=="/dev/dri/card[0-9]", SUBSYSTEMS=="pci", ATTRS{vendor}=="%s", ATTRS{device}=="%s", TAG+="%s"\n' \
+            "$EGPU_CARD_VENDOR" "$EGPU_CARD_DEVICE" "$tag"
+    } > "$file"
 }
 
 # One row per connector of a card: name, status, EDID size, first mode.

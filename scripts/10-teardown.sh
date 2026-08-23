@@ -231,16 +231,12 @@ if [[ $MODE == unload ]]; then
     fi
 
     systemctl stop nvidia-persistenced 2>/dev/null && ok "stopped nvidia-persistenced" || true
-    for m in "${EGPU_NV_MODULES[@]}"; do
-        [[ -d /sys/module/$m ]] || { info "$m already gone"; continue; }
-        if modprobe -r "$m" 2>/dev/null; then
-            ok "$m unloaded"
-        else
-            bad "$m NOT unloaded (refcnt=$(cat /sys/module/$m/refcnt 2>/dev/null))"
-            info "Something reopened the card. Check: sudo $SELF --status"
-            exit 1
-        fi
-    done
+    # The loop is egpu_unload_stack; only the advice on failure is ours, which
+    # is what EGPU_UNLOAD_FAILED exists for.
+    if ! egpu_unload_stack; then
+        info "${EGPU_UNLOAD_FAILED:-something} was reopened. Check: sudo $SELF --status"
+        exit 1
+    fi
 
     hdr "Verification"
     left=$(compgen -G "/sys/module/nvidia*" 2>/dev/null | sed 's|.*/||' | tr '\n' ' ')
@@ -293,18 +289,14 @@ else
 fi
 
 hdr "Tagging the card as ignored"
-mkdir -p "$(dirname "$IGNORE_RULE")" || { bad "cannot create $(dirname "$IGNORE_RULE")"; exit 1; }
-cat > "$IGNORE_RULE" <<EOF
-# Make mutter ignore the external GPU entirely, so it stops holding its DRM
-# node and the driver can be unloaded. Written by $SELF
-#
-# In /run deliberately: this is a teardown state, not a configuration. /run is
-# tmpfs, so a reboot removes it and the card is usable again without any undo.
-#
-# Matching is on PCI vendor:device, not /dev/dri/cardN - card numbering moves
-# on this machine (card0 is a USB display, the eGPU is hot-plugged).
-SUBSYSTEM=="drm", ENV{DEVTYPE}=="drm_minor", ENV{DEVNAME}=="/dev/dri/card[0-9]", SUBSYSTEMS=="pci", ATTRS{vendor}=="$EGPU_CARD_VENDOR", ATTRS{device}=="$EGPU_CARD_DEVICE", TAG+="mutter-device-ignore"
-EOF
+
+egpu_write_mutter_tag_rule "$IGNORE_RULE" mutter-device-ignore \
+    "Make mutter ignore the external GPU entirely, so it stops holding its DRM" \
+    "node and the driver can be unloaded." \
+    "" \
+    "In /run deliberately: this is a teardown state, not a configuration. /run" \
+    "is tmpfs, so a reboot removes it and the card is usable again with no undo." \
+    || { bad "cannot write $IGNORE_RULE"; exit 1; }
 ok "wrote $IGNORE_RULE"
 udevadm control --reload 2>/dev/null && ok "udev rules reloaded"
 udevadm trigger --subsystem-match=drm 2>/dev/null && ok "drm devices retriggered"
