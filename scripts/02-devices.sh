@@ -15,7 +15,6 @@
 # USAGE
 #   ./scripts/02-devices.sh            candidates plus their topology
 #   ./scripts/02-devices.sh --all      every display controller, including internal ones
-#   ./scripts/02-devices.sh --bdf      print candidate addresses only (for scripting)
 
 set -uo pipefail
 SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,15 +24,9 @@ source "$SELFDIR/../lib/egpu-lib.sh"
 MODE=candidates
 for a in "$@"; do case $a in
     --all) MODE=all ;;
-    --bdf) MODE=bdf ;;
     -h|--help) egpu_usage "$0"; exit 0 ;;
     *) echo "Unknown argument: $a" >&2; exit 2 ;;
 esac; done
-
-if [[ $MODE == bdf ]]; then
-    egpu_candidates | cut -d'|' -f1
-    exit 0
-fi
 
 if [[ $MODE == all ]]; then
     echo "All display controllers on this machine:"

@@ -438,20 +438,28 @@ EGPU_GSPOFF=/etc/modprobe.d/zzzz-egpu-gsp-off.conf
 
 egpu_gsp_block() { printf 'options nvidia NVreg_EnableGpuFirmware=0\n' > "$EGPU_GSPOFF"; }
 
-# Moved aside, not deleted, and the suffix deliberately does not end in .conf so
-# modprobe ignores the leftover. Non-zero when there was no block to remove.
+# DELETED, not renamed to .disabled-<stamp>.
+#
+# It used to be moved aside "so you can see it existed", and only run.sh --off
+# ever cleaned the copies up - so every successful bring-up left one more behind.
+# Fifteen of them had piled up in /etc/modprobe.d in two days. Nothing ever read
+# one: egpu_gsp_block recreates the file from a single printf, so there was never
+# anything in it to preserve.
+#
+# Non-zero when there was no block to remove.
 egpu_gsp_unblock() {
     [[ -f $EGPU_GSPOFF ]] || return 1
-    mv "$EGPU_GSPOFF" "$EGPU_GSPOFF.disabled-$(egpu_stamp)"
+    rm -f "$EGPU_GSPOFF"
 }
 
-# Drop the leftovers. No "shopt -s nullglob": that is global shell state, and an
-# explicit existence test costs one line.
+# Sweep up the .disabled-<stamp> copies left by the version that renamed instead
+# of deleting. Kept so an existing install cleans itself; delete this once no
+# machine has any.
 egpu_gsp_clean() {
     local f
     for f in "$EGPU_GSPOFF".disabled-*; do
         [[ -e $f ]] || continue
-        rm -f "$f" && ok "removed $(basename "$f")"
+        rm -f "$f" && ok "removed stale $(basename "$f")"
     done
     return 0
 }

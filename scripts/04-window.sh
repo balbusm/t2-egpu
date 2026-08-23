@@ -189,13 +189,14 @@ else
     exit $rc
 fi
 mark "AFTER insmod"
-dmesg | grep -i egpu_rp_window | tail -8 | sed 's/^.*\] /    /'
 echo
-echo "  prefetchable window of $RP, read from hardware:"
+echo "  prefetchable window of $RP, read back from hardware:"
 lspci -vv -s "${RP#0000:}" | grep -i prefetchable | sed 's/^\s*/    /'
-printf "    registers: 24.w=%s 26.w=%s 28.l=%s 2c.l=%s\n" \
-    "$(setpci -s $RP 24.w)" "$(setpci -s $RP 26.w)" \
-    "$(setpci -s $RP 28.l)" "$(setpci -s $RP 2c.l)"
+# The raw bridge registers (24.w/26.w/28.l/2c.l) used to be printed here as
+# well. They say the same thing as the line above in hex, and were how the
+# module was verified while it was being written. Same for a dmesg dump of the
+# module's own messages on the SUCCESS path - it stays on the failure path
+# below, where it is the only thing that explains what went wrong.
 
 # ---------------------------------------------------------------- 5
 echo
