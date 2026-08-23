@@ -78,12 +78,12 @@
 #
 # USAGE
 #
-#   sudo ./10-teardown.sh --release    # phase 1, restarts the session
-#   sudo ./10-teardown.sh --unload     # phase 2, after logging back in
-#   sudo ./10-teardown.sh --off        # undo --release without unloading:
+#   sudo ./scripts/10-teardown.sh --release    # phase 1, restarts the session
+#   sudo ./scripts/10-teardown.sh --unload     # phase 2, after logging back in
+#   sudo ./scripts/10-teardown.sh --off        # undo --release without unloading:
 #                                      # the card comes back at the next
 #                                      # session restart
-#   ./10-teardown.sh --status          # who still holds the card
+#   ./scripts/10-teardown.sh --status          # who still holds the card
 #
 # Also reachable as: sudo ./run.sh --release | --unload
 
@@ -92,7 +92,7 @@ set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SELF="$DIR/$(basename "${BASH_SOURCE[0]}")"
 # shellcheck source=lib/egpu-lib.sh
-source "$DIR/lib/egpu-lib.sh"          # reporters, egpu_nv_card, EGPU_NV_MODULES
+source "$DIR/../lib/egpu-lib.sh"          # reporters, egpu_nv_card, EGPU_NV_MODULES
 
 IGNORE_RULE=/run/udev/rules.d/63-egpu-ignore.rules   # /run: dies on reboot
 
@@ -204,7 +204,7 @@ if [[ $MODE == off ]]; then
     fi
     echo
     info "mutter picks the card up again at the next session restart:"
-    info "    sudo $DIR/run.sh --restart-ui"
+    info "    sudo $EGPU_ROOT/run.sh --restart-ui"
     exit 0
 fi
 
@@ -277,7 +277,7 @@ hdr "Phase 1 - making the compositor let go"
 if ! egpu_nv_card; then
     bad "no DRM card owned by the nvidia driver"
     info "Nothing to release. If the driver is already unloaded you are done;"
-    info "if the card is gone, use: sudo $DIR/run.sh --reset"
+    info "if the card is gone, use: sudo $EGPU_ROOT/run.sh --reset"
     exit 1
 fi
 ok "$EGPU_CARD  $EGPU_CARD_BDF  vendor=$EGPU_CARD_VENDOR device=$EGPU_CARD_DEVICE"
@@ -286,10 +286,10 @@ ok "$EGPU_CARD  $EGPU_CARD_BDF  vendor=$EGPU_CARD_VENDOR device=$EGPU_CARD_DEVIC
 hdr "Dropping the primary-GPU override"
 # Pointless once the card is going away, and leaving it in place would point a
 # fresh session at a device that is about to vanish.
-if [[ -x $DIR/09-primary-gpu.sh ]]; then
-    "$DIR/09-primary-gpu.sh" --off | sed 's/^/  /' || warn "could not clear the primary-GPU override"
+if [[ -x $EGPU_SCRIPTS/09-primary-gpu.sh ]]; then
+    "$EGPU_SCRIPTS/09-primary-gpu.sh" --off | sed 's/^/  /' || warn "could not clear the primary-GPU override"
 else
-    warn "missing $DIR/09-primary-gpu.sh"
+    warn "missing $EGPU_SCRIPTS/09-primary-gpu.sh"
 fi
 
 hdr "Tagging the card as ignored"

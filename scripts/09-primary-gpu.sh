@@ -109,10 +109,10 @@
 #
 # USAGE
 #
-#   sudo ./09-primary-gpu.sh --on             # this boot only (rule in /run)
-#   sudo ./09-primary-gpu.sh --on --persist   # survives reboot (rule in /etc)
-#   sudo ./09-primary-gpu.sh --off            # remove from BOTH locations
-#   ./09-primary-gpu.sh --status              # what is installed and whether it
+#   sudo ./scripts/09-primary-gpu.sh --on             # this boot only (rule in /run)
+#   sudo ./scripts/09-primary-gpu.sh --on --persist   # survives reboot (rule in /etc)
+#   sudo ./scripts/09-primary-gpu.sh --off            # remove from BOTH locations
+#   ./scripts/09-primary-gpu.sh --status              # what is installed and whether it
 #                                            # survives a reboot
 #
 # Neither --on nor --off takes effect until the session restarts. Nothing
@@ -134,7 +134,7 @@ set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/egpu-lib.sh
-source "$DIR/lib/egpu-lib.sh"          # reporters, egpu_nv_card, egpu_usage
+source "$DIR/../lib/egpu-lib.sh"          # reporters, egpu_nv_card, egpu_usage
 
 RULE_NAME=62-egpu-primary-gpu.rules
 RULE_RUN=/run/udev/rules.d/$RULE_NAME     # volatile - default
@@ -235,7 +235,7 @@ if [[ $MODE == off ]]; then
     echo
     info "The running session is unchanged - mutter reads udev tags only when"
     info "it starts. The Radeon becomes primary again at the next restart:"
-    info "    sudo $DIR/run.sh --restart-ui"
+    info "    sudo $EGPU_ROOT/run.sh --restart-ui"
     info ""
     info "NOT 'systemctl isolate graphical.target': when the system is already"
     info "IN graphical.target that is a no-op and nothing restarts. Use the"
@@ -249,7 +249,7 @@ hdr "Finding the eGPU"
 if ! egpu_nv_card; then
     bad "no DRM card owned by the nvidia driver"
     info "The card has to be up before its PCI IDs can be read:"
-    info "    sudo $DIR/run.sh --restart-ui"
+    info "    sudo $EGPU_ROOT/run.sh --restart-ui"
     exit 1
 fi
 ok "$EGPU_CARD  $EGPU_CARD_BDF  vendor=$EGPU_CARD_VENDOR device=$EGPU_CARD_DEVICE"
@@ -287,7 +287,7 @@ fi
 cat > "$RULE" <<EOF
 # Make the external GPU mutter's primary device, so the monitor attached to it
 # is composited and scanned out on the same card - no Thunderbolt round trip.
-# Written by $DIR/09-primary-gpu.sh
+# Written by $EGPU_SCRIPTS/09-primary-gpu.sh
 #
 # Matching is on PCI vendor:device, not /dev/dri/cardN: card numbering moves on
 # this machine (card0 is a USB display, the eGPU is hot-plugged).
@@ -312,7 +312,7 @@ fi
 hdr "NEXT STEP - AND THE RISK"
 echo "  Nothing has changed in the running desktop. It takes effect on restart:"
 echo
-echo "      sudo $DIR/run.sh --restart-ui"
+echo "      sudo $EGPU_ROOT/run.sh --restart-ui"
 echo
 echo "  If the desktop does NOT come back:"
 echo "      1. Ctrl+Alt+F3, log in"

@@ -35,19 +35,19 @@
 #
 # USAGE
 #
-#   sudo ./07-link-cap-gsp.sh              # Gen3 + bit 5, GSP on
-#   sudo CAP_SPEED=2 ./07-link-cap-gsp.sh  # Gen2 ceiling
-#   sudo ./07-link-cap-gsp.sh --retrain    # force a retrain as well
-#   sudo ./07-link-cap-gsp.sh --off        # revert: GSP off, cap removed
-#   sudo ./07-link-cap-gsp.sh --arm-panic  # panic on kernel stall (diagnostics)
+#   sudo ./scripts/07-link-cap-gsp.sh              # Gen3 + bit 5, GSP on
+#   sudo CAP_SPEED=2 ./scripts/07-link-cap-gsp.sh  # Gen2 ceiling
+#   sudo ./scripts/07-link-cap-gsp.sh --retrain    # force a retrain as well
+#   sudo ./scripts/07-link-cap-gsp.sh --off        # revert: GSP off, cap removed
+#   sudo ./scripts/07-link-cap-gsp.sh --arm-panic  # panic on kernel stall (diagnostics)
 
 set -uo pipefail
 
 SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the package is self-locating
 # shellcheck source=lib/egpu-lib.sh
-source "$SELFDIR/lib/egpu-lib.sh"
+source "$SELFDIR/../lib/egpu-lib.sh"
 if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run ./02-devices.sh to see what is present." >&2
+    echo "Cannot resolve eGPU topology. Run $EGPU_SCRIPTS/02-devices.sh to see what is present." >&2
     exit 1
 fi
 # Adopt what discovery found. Skipping this leaves GPU empty, and an empty
@@ -58,7 +58,7 @@ BRIDGE=${BRIDGE:-$EGPU_BRIDGE}
 
 GSPOFF=/etc/modprobe.d/zzzz-egpu-gsp-off.conf
 SYSCTL=/etc/sysctl.d/99-egpu-panic.conf
-LOGDIR=$SELFDIR/logs
+LOGDIR=$EGPU_LOGS
 STAMP=$(egpu_stamp)
 # Named after THIS script, so a stray log cannot be mistaken for another
 # step's output. Its own kernel log, separate from the bring-up's: this script

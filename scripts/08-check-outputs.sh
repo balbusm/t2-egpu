@@ -22,13 +22,13 @@
 # 0x12 = MODE_DEFAULT | POLICY_ALLOW_UNSIGNED only means "the driver decides".
 # Proof is a non-empty GSP Firmware Version from nvidia-smi -q.
 #
-#   sudo ./08-check-outputs.sh
-#   sudo ./08-check-outputs.sh --force   # force a re-detect on every connector
+#   sudo ./scripts/08-check-outputs.sh
+#   sudo ./scripts/08-check-outputs.sh --force   # force a re-detect on every connector
 
 set -uo pipefail
 SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/egpu-lib.sh
-source "$SELFDIR/lib/egpu-lib.sh"
+source "$SELFDIR/../lib/egpu-lib.sh"
 
 FORCE=0
 for a in "$@"; do case $a in

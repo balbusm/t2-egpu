@@ -30,6 +30,26 @@
 #                Never devices/<ROOT_PORT>/rescan - that rescans the bus the
 #                root port SITS ON (bus 00) and hangs the machine.
 
+# ---------------------------------------------------------------------------
+# WHERE THE PACKAGE LIVES
+#
+# Derived from THIS file's own location, so no script has to reason about how
+# deep it sits. run.sh is in the package root, the numbered scripts are one
+# level down in scripts/, and lib/ is directly under the root - which is the one
+# fact this needs to know.
+#
+# A script only has to find the library; everything else comes from here. That
+# is the whole reason this exists: before scripts/ was a directory, "$SELFDIR"
+# meant both "where I am" and "where the package is", and those are now
+# different things in nine files out of eleven.
+EGPU_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EGPU_ROOT="$(cd "$EGPU_LIB_DIR/.." && pwd)"
+EGPU_SCRIPTS="$EGPU_ROOT/scripts"
+EGPU_LOGS="$EGPU_ROOT/logs"
+EGPU_MODULE="$EGPU_ROOT/module"
+EGPU_BUILD="$EGPU_ROOT/build/module"
+export EGPU_ROOT EGPU_SCRIPTS EGPU_LOGS EGPU_MODULE EGPU_BUILD
+
 PCI_DEVICES=${PCI_DEVICES:-/sys/bus/pci/devices}
 
 # Known GPU vendors. Extend here if needed.

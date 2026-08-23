@@ -39,18 +39,18 @@ set -uo pipefail
 
 SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the package is self-locating
 # shellcheck source=lib/egpu-lib.sh
-source "$SELFDIR/lib/egpu-lib.sh"
+source "$SELFDIR/../lib/egpu-lib.sh"
 if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run ./02-devices.sh to see what is present." >&2
+    echo "Cannot resolve eGPU topology. Run $EGPU_SCRIPTS/02-devices.sh to see what is present." >&2
     exit 1
 fi
 
 
 DEV=$EGPU_GPU
-LOGDIR=$SELFDIR/logs
+LOGDIR=$EGPU_LOGS
 STAMP=$(egpu_stamp)
 KLOG=${EGPU_KLOG:-$LOGDIR/kernel-$STAMP.log}
-FALLBACK=$SELFDIR/06-bar-fallback.sh
+FALLBACK=$EGPU_SCRIPTS/06-bar-fallback.sh
 UDEV_RULE=/etc/udev/rules.d/71-nvidia.rules
 
 CONFIGURE_ONLY=0
@@ -160,7 +160,7 @@ else
     echo "    MISSING - DKMS did not build nvidia for this kernel." >&2
     echo "    Fix: rebuild the driver for the running kernel, e.g." >&2
     echo "      sudo dkms autoinstall -k \"$(uname -r)\"" >&2
-    echo "    Diagnose: sudo ./01-check.sh" >&2
+    echo "    Diagnose: sudo $EGPU_SCRIPTS/01-check.sh" >&2
     exit 1
 fi
 echo
@@ -278,7 +278,7 @@ fails with VK_ERROR_UNKNOWN and vulkaninfo segfaults.
 
 Loading nvidia_drm by hand WITHOUT "modeset=1" gives no display, because a
 conflicting "options nvidia_drm modeset=0" may exist in modprobe.d and the
-kernel takes the last repeated parameter. Run ./01-check.sh to see the effective
+kernel takes the last repeated parameter. Run ./scripts/01-check.sh to see the effective
 value.
 EOF
 else

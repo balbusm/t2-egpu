@@ -10,16 +10,16 @@
 # needs a GRUB edit and a reboot, so it is only reported, never changed.
 #
 # USAGE:
-#   sudo ./01-check.sh          # report
-#   sudo ./01-check.sh --fix    # + write the missing modprobe.d file
-#   ./01-check.sh --quiet       # exit code only (0 = ready)
+#   sudo ./scripts/01-check.sh          # report
+#   sudo ./scripts/01-check.sh --fix    # + write the missing modprobe.d file
+#   ./scripts/01-check.sh --quiet       # exit code only (0 = ready)
 #
 # EXIT CODE: 0 = everything critical is in place, 1 = something critical is missing.
 
 set -uo pipefail
 SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/egpu-lib.sh
-source "$SELFDIR/lib/egpu-lib.sh"
+source "$SELFDIR/../lib/egpu-lib.sh"
 egpu_resolve "${GPU:-}" >/dev/null 2>&1 || true
 
 
@@ -61,7 +61,7 @@ nvfail() {
 
 say "==================================================================="
 say " 01-check: prerequisites$( ((FIX)) && echo '   [--fix]')"
-say " package: $SELFDIR"
+say " package: $EGPU_ROOT"
 say "==================================================================="
 
 # ---------------------------------------------------------------- 1
@@ -338,7 +338,7 @@ hdr "7. Hardware"
 if [[ -z ${EGPU_GPU:-} ]]; then
     fail "no display controller found behind a Thunderbolt/USB4 tunnel"
     info "power-cycle the enclosure, plug the cable in, check: boltctl list"
-    info "see what the kernel does show:  ./02-devices.sh --all"
+    info "see what the kernel does show:  $EGPU_SCRIPTS/02-devices.sh --all"
 else
     pass "card: $EGPU_GPU  $EGPU_VENDOR_NAME"
     info "$EGPU_DESC"
@@ -400,17 +400,22 @@ hdr "9. Package integrity"
 # cannot notice a file that is absent - but anything matching the numbered
 # pattern is additionally checked for the execute bit, so a new script cannot be
 # silently non-executable.
-for f in run.sh 01-check.sh 02-devices.sh 03-build-module.sh 04-window.sh \
+# run.sh is the entry point and lives in the package root; the numbered steps
+# live in scripts/. Paths come from the library (EGPU_ROOT / EGPU_SCRIPTS)
+# rather than from this script's own directory, which is scripts/ and no longer
+# the same thing.
+[[ -x $EGPU_ROOT/run.sh ]] && pass "run.sh" || fail "run.sh - missing or not executable"
+for f in 01-check.sh 02-devices.sh 03-build-module.sh 04-window.sh \
          05-load-driver.sh 06-bar-fallback.sh 07-link-cap-gsp.sh 08-check-outputs.sh \
          09-primary-gpu.sh 10-teardown.sh; do
-    [[ -x $SELFDIR/$f ]] && pass "$f" || fail "$f - missing or not executable"
+    [[ -x $EGPU_SCRIPTS/$f ]] && pass "scripts/$f" || fail "scripts/$f - missing or not executable"
 done
 for f in lib/egpu-lib.sh module/egpu_rp_window.c module/Makefile; do
-    [[ -f $SELFDIR/$f ]] && pass "$f" || fail "$f - missing"
+    [[ -f $EGPU_ROOT/$f ]] && pass "$f" || fail "$f - missing"
 done
 shopt -s nullglob
-for f in "$SELFDIR"/[0-9]*-*.sh; do
-    [[ -x $f ]] || fail "$(basename "$f") - present but not executable"
+for f in "$EGPU_SCRIPTS"/[0-9]*-*.sh; do
+    [[ -x $f ]] || fail "scripts/$(basename "$f") - present but not executable"
 done
 shopt -u nullglob
 

@@ -34,21 +34,21 @@ set -uo pipefail
 
 SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the package is self-locating
 # shellcheck source=lib/egpu-lib.sh
-source "$SELFDIR/lib/egpu-lib.sh"
+source "$SELFDIR/../lib/egpu-lib.sh"
 if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run ./02-devices.sh to see what is present." >&2
+    echo "Cannot resolve eGPU topology. Run $EGPU_SCRIPTS/02-devices.sh to see what is present." >&2
     exit 1
 fi
 
 
 RUN=$(uname -r)
-MODDIR=$SELFDIR/module
+MODDIR=$EGPU_MODULE
 # Build artifacts live outside the source tree - see module/Makefile for why.
 BUILDDIR=$(make --no-print-directory -C "$MODDIR" -s print-builddir 2>/dev/null)
-BUILDDIR=${BUILDDIR:-$SELFDIR/build/module}
+BUILDDIR=${BUILDDIR:-$EGPU_BUILD}
 KO=$BUILDDIR/egpu_rp_window.ko
-WINDOW=$SELFDIR/04-window.sh
-DRIVER=$SELFDIR/05-load-driver.sh
+WINDOW=$EGPU_SCRIPTS/04-window.sh
+DRIVER=$EGPU_SCRIPTS/05-load-driver.sh
 DEV=$EGPU_GPU
 MODE=full
 for a in "$@"; do case $a in
@@ -74,7 +74,7 @@ egpu_require_root
 [[ -x $WINDOW ]] || { echo "ERROR: missing $WINDOW" >&2; exit 1; }
 [[ -x $DRIVER  ]] || { echo "ERROR: missing $DRIVER"  >&2; exit 1; }
 
-LOGDIR=$SELFDIR/logs
+LOGDIR=$EGPU_LOGS
 STAMP=$(egpu_stamp)
 egpu_log_open "$LOGDIR" script "$STAMP"
 trap egpu_cleanup EXIT

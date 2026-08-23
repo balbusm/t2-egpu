@@ -58,7 +58,7 @@
 #
 # The card, the bridge above it and the root port are discovered, never
 # hardcoded - see lib/egpu-lib.sh. Override with GPU=<bdf> or BRIDGE=<bdf>.
-# Run ./02-devices.sh to list candidates.
+# Run ./scripts/02-devices.sh to list candidates.
 #
 # USAGE
 #
@@ -76,7 +76,7 @@
 #                                      #
 #                                      # ANY flag suppresses both defaults.
 #   sudo GPU=<bdf> ./run.sh            # pick a card when several are present
-#                                      (get <bdf> from ./02-devices.sh)
+#                                      (get <bdf> from ./scripts/02-devices.sh)
 #   sudo CAP_SPEED=2 ./run.sh        # lower link ceiling (1..4, default 3)
 #   sudo ./run.sh --retrain          # force a link retrain
 #   sudo ./run.sh --no-gsp           # load without GSP
@@ -119,7 +119,7 @@
 #                                    # Safe at boot though - the card is absent
 #                                    # then, so the udev rule matches nothing.
 #                                    # Recovery and details:
-#                                    #   ./09-primary-gpu.sh --help
+#                                    #   ./scripts/09-primary-gpu.sh --help
 #                                    #
 #                                    # Needs a session restart to take effect;
 #                                    # combine with --restart-ui.
@@ -165,7 +165,7 @@ SELFDIR="$DIR"
 source "$SELFDIR/lib/egpu-lib.sh"
 
 GSPOFF=/etc/modprobe.d/zzzz-egpu-gsp-off.conf
-LOGDIR=$DIR/logs
+LOGDIR=$EGPU_LOGS
 STAMP=$(date +%Y%m%d-%H%M%S)
 # ONE stamp for the whole run. 4-, 5-, 6- and 7- pick this up instead of each
 # calling date(1) for itself, so a single bring-up produces one correlated set
@@ -229,10 +229,10 @@ do_reset() {
     local rc=0
     # Compositing first: it is the one that needs root and the one that decides
     # whether the desktop depends on the card at all.
-    if [[ -x $DIR/09-primary-gpu.sh ]]; then
-        "$DIR/09-primary-gpu.sh" --off || rc=1
+    if [[ -x $EGPU_SCRIPTS/09-primary-gpu.sh ]]; then
+        "$EGPU_SCRIPTS/09-primary-gpu.sh" --off || rc=1
     else
-        echo "  ! missing $DIR/09-primary-gpu.sh" >&2; rc=1
+        echo "  ! missing $EGPU_SCRIPTS/09-primary-gpu.sh" >&2; rc=1
     fi
     printf '\n'
     echo "  Compositing returns to the Radeon at the next session restart:"
@@ -277,15 +277,15 @@ do_off() {
 
 for a in "$@"; do case $a in
     -h|--help) egpu_usage "$0"; exit 0 ;;
-    --release) exec "$DIR/10-teardown.sh" --release ;;
-    --unload)  exec "$DIR/10-teardown.sh" --unload ;;
+    --release) exec "$EGPU_SCRIPTS/10-teardown.sh" --release ;;
+    --unload)  exec "$EGPU_SCRIPTS/10-teardown.sh" --unload ;;
     --reset)   do_reset; exit $? ;;
     --off)     do_off;   exit $? ;;
 esac; done
 
 # ---------- FROM HERE ON THE CARD IS REQUIRED ----------
 if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run ./02-devices.sh to see what is present." >&2
+    echo "Cannot resolve eGPU topology. Run $EGPU_SCRIPTS/02-devices.sh to see what is present." >&2
     exit 1
 fi
 # Adopt what discovery found. Skipping this leaves GPU empty, and an empty
@@ -359,7 +359,7 @@ if (( DEFAULTS_APPLIED )); then
     info "Verified here: external monitor 137.9 -> 230 fps, internal 181.1 -> ~150"
     warn "the card becomes a single point of failure for the whole desktop"
     info "Recovery if the desktop does not come back:"
-    info "  Ctrl+Alt+F3, then: sudo $DIR/09-primary-gpu.sh --off"
+    info "  Ctrl+Alt+F3, then: sudo $EGPU_SCRIPTS/09-primary-gpu.sh --off"
     info "  followed by:       sudo systemctl restart gdm"
     info "  or just reboot - the rule lives in /run and the card is absent at boot"
     info ""
@@ -444,18 +444,18 @@ fi
 # they are verified BEFORE we touch hardware. --skip-preflight deliberately only.
 if (( ! SKIP_PRE )); then
     hdr "0. Prerequisites (01-check.sh)"
-    if [[ ! -x $DIR/01-check.sh ]]; then
-        bad "missing $DIR/01-check.sh - package incomplete"; exit 1
+    if [[ ! -x $EGPU_SCRIPTS/01-check.sh ]]; then
+        bad "missing $EGPU_SCRIPTS/01-check.sh - package incomplete"; exit 1
     fi
-    if "$DIR/01-check.sh" --quiet; then
+    if "$EGPU_SCRIPTS/01-check.sh" --quiet; then
         ok "prerequisites satisfied"
     else
         bad "prerequisites NOT satisfied - aborting before touching the hardware"
         echo
-        "$DIR/01-check.sh" | grep -E 'FAIL|missing' || true
+        "$EGPU_SCRIPTS/01-check.sh" | grep -E 'FAIL|missing' || true
         echo
-        info "Full report:   sudo $DIR/01-check.sh"
-        info "Attempt a fix: sudo $DIR/01-check.sh --fix"
+        info "Full report:   sudo $EGPU_SCRIPTS/01-check.sh"
+        info "Attempt a fix: sudo $EGPU_SCRIPTS/01-check.sh --fix"
         info "Skip anyway:   sudo $0 --skip-preflight"
         exit 1
     fi
@@ -498,8 +498,8 @@ else
     # block autoloads nvidia off one of those, it must not come up with GSP on.
     printf 'options nvidia NVreg_EnableGpuFirmware=0\n' > "$GSPOFF"
     ok "GSP block inserted for the duration of the window setup (safety net)"
-    [[ -x $DIR/03-build-module.sh ]] || { bad "missing $DIR/03-build-module.sh"; exit 1; }
-    if "$DIR/03-build-module.sh" --configure-only; then ok "window setup succeeded"
+    [[ -x $EGPU_SCRIPTS/03-build-module.sh ]] || { bad "missing $EGPU_SCRIPTS/03-build-module.sh"; exit 1; }
+    if "$EGPU_SCRIPTS/03-build-module.sh" --configure-only; then ok "window setup succeeded"
     else bad "window setup failed - no point continuing"; exit 1; fi
     [[ $(bar1) == "$BAR1_WANT" ]] || { bad "BAR1 still != $BAR1_WANT ($(bar1))"; exit 1; }
     # No check for "did something load nvidia anyway" here: step 4 below unloads
@@ -663,12 +663,12 @@ fi
 # IDs from the live device rather than hardcoding them.
 if [[ $PRIMARY_GPU != keep ]]; then
     hdr "10. Compositor's primary GPU (--primary-gpu)"
-    if [[ ! -x $DIR/09-primary-gpu.sh ]]; then
-        warn "missing $DIR/09-primary-gpu.sh - skipping"
+    if [[ ! -x $EGPU_SCRIPTS/09-primary-gpu.sh ]]; then
+        warn "missing $EGPU_SCRIPTS/09-primary-gpu.sh - skipping"
     elif [[ $PRIMARY_GPU == on ]]; then
         # NON-FATAL on purpose: this is an optimisation on top of a card that
         # already works. It must not turn a good bring-up into a failure.
-        if "$DIR/09-primary-gpu.sh" --on; then
+        if "$EGPU_SCRIPTS/09-primary-gpu.sh" --on; then
             (( RESTART_UI )) || {
                 warn "not active yet - it needs a session restart"
                 info "    sudo $0 --restart-ui"
@@ -678,7 +678,7 @@ if [[ $PRIMARY_GPU != keep ]]; then
             warn "could not set the primary GPU - the card is up regardless"
         fi
     else
-        "$DIR/09-primary-gpu.sh" --off || warn "could not remove the primary-GPU override"
+        "$EGPU_SCRIPTS/09-primary-gpu.sh" --off || warn "could not remove the primary-GPU override"
     fi
 fi
 
@@ -687,8 +687,8 @@ if (( RESTART_UI )); then
 fi
 
 hdr "DONE"
-echo "  Check outputs later:  sudo $DIR/08-check-outputs.sh --force"
-echo "  Who composites:       $DIR/09-primary-gpu.sh --status"
+echo "  Check outputs later:  sudo $EGPU_SCRIPTS/08-check-outputs.sh --force"
+echo "  Who composites:       $EGPU_SCRIPTS/09-primary-gpu.sh --status"
 echo "  GPU selection reset:  sudo $0 --reset"
 echo "  Restart the session:  sudo $0 --restart-ui"
 echo "  Revert to no-GSP:     sudo $0 --off"

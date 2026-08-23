@@ -46,8 +46,8 @@
 # running this script the way its own header documented produced a 128 MB BAR1
 # that run.sh then reported as a failure.
 #
-#   sudo ./04-window.sh
-#   sudo WIN_BASE=0xf0000000 WIN_MB=192 REBAR_SIZE=7 ./04-window.sh   # override
+#   sudo ./scripts/04-window.sh
+#   sudo WIN_BASE=0xf0000000 WIN_MB=192 REBAR_SIZE=7 ./scripts/04-window.sh   # override
 
 set -uo pipefail
 
@@ -56,9 +56,9 @@ SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the package is self-
 # Topology is DISCOVERED, never hardcoded: bus numbers behind a Thunderbolt
 # tunnel shift between machines, between ports and between hot-plugs.
 # shellcheck source=lib/egpu-lib.sh
-source "$SELFDIR/lib/egpu-lib.sh"
+source "$SELFDIR/../lib/egpu-lib.sh"
 if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run ./02-devices.sh to see what is present." >&2
+    echo "Cannot resolve eGPU topology. Run $EGPU_SCRIPTS/02-devices.sh to see what is present." >&2
     exit 1
 fi
 RP=$EGPU_ROOT_PORT           # CPU root port whose prefetchable window we move
@@ -66,18 +66,18 @@ TB=$EGPU_TB_UPSTREAM         # first device below it - removed and rescanned
 DEV=$EGPU_GPU                # the card itself
 AUDIO=${DEV%.*}.1            # its HDMI-audio function, if present
 RESCAN_BUS=$EGPU_SECONDARY_BUS
-MODDIR=$SELFDIR/module
+MODDIR=$EGPU_MODULE
 # The module is built out of tree - module/Makefile explains why. Ask make
 # for the path so it is defined in exactly one place.
 BUILDDIR=$(make --no-print-directory -C "$MODDIR" -s print-builddir 2>/dev/null)
-BUILDDIR=${BUILDDIR:-$SELFDIR/build/module}
+BUILDDIR=${BUILDDIR:-$EGPU_BUILD}
 KO=$BUILDDIR/egpu_rp_window.ko
 
 egpu_window_defaults           # WIN_BASE / WIN_MB / REBAR_SIZE - one definition
 WIN_END=$((WIN_BASE + WIN_MB * 1024 * 1024 - 1))
 TARGET_BAR=1
 
-LOGDIR=$SELFDIR/logs
+LOGDIR=$EGPU_LOGS
 STAMP=$(egpu_stamp)            # inherited from run.sh, so one run = one stamp
 # A parent already capturing the kernel log exports EGPU_KLOG; adopt it so the
 # path reported below is the one actually written to.
@@ -250,7 +250,7 @@ else
     echo "  ================================================"
     echo "  BAR1 = $bar1  size $sz"
     echo "  ================================================"
-    echo "  Next: sudo ./05-load-driver.sh"
+    echo "  Next: sudo $EGPU_SCRIPTS/05-load-driver.sh"
 fi
 echo
 echo "Log kernel: $KLOG"

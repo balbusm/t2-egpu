@@ -19,9 +19,9 @@ set -uo pipefail
 
 SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the package is self-locating
 # shellcheck source=lib/egpu-lib.sh
-source "$SELFDIR/lib/egpu-lib.sh"
+source "$SELFDIR/../lib/egpu-lib.sh"
 if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run ./02-devices.sh to see what is present." >&2
+    echo "Cannot resolve eGPU topology. Run $EGPU_SCRIPTS/02-devices.sh to see what is present." >&2
     exit 1
 fi
 
@@ -32,7 +32,7 @@ TARGET_BAR=1
 # to make the request small enough to fit whatever the kernel can still lay out.
 TARGET_SIZE=6                 # 2^6 MB = 64 MB
 
-LOGDIR=$SELFDIR/logs
+LOGDIR=$EGPU_LOGS
 STAMP=$(egpu_stamp)
 # 05-load-driver calls this script while its own capture is running and exports
 # EGPU_KLOG; adopting it avoids a second "dmesg -w" on the same file.

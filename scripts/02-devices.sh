@@ -13,14 +13,14 @@
 #   * you want the exact GPU=<bdf> string to paste into another command
 #
 # USAGE
-#   ./02-devices.sh            candidates plus their topology
-#   ./02-devices.sh --all      every display controller, including internal ones
-#   ./02-devices.sh --bdf      print candidate addresses only (for scripting)
+#   ./scripts/02-devices.sh            candidates plus their topology
+#   ./scripts/02-devices.sh --all      every display controller, including internal ones
+#   ./scripts/02-devices.sh --bdf      print candidate addresses only (for scripting)
 
 set -uo pipefail
 SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/egpu-lib.sh
-source "$SELFDIR/lib/egpu-lib.sh"
+source "$SELFDIR/../lib/egpu-lib.sh"
 
 MODE=candidates
 for a in "$@"; do case $a in
@@ -60,7 +60,7 @@ if (( ${#CAND[@]} == 0 )); then
     echo "     Status must say 'connected', not 'disconnected'."
     echo "  3. Does the kernel see anything new?   lspci -t"
     echo "  4. Is the card on a physical slot rather than a tunnel?"
-    echo "     ./02-devices.sh --all"
+    echo "     $EGPU_SCRIPTS/02-devices.sh --all"
     exit 1
 fi
 
