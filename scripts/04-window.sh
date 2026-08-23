@@ -57,45 +57,35 @@ SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the package is self-
 # tunnel shift between machines, between ports and between hot-plugs.
 # shellcheck source=lib/egpu-lib.sh
 source "$SELFDIR/../lib/egpu-lib.sh"
-if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run $EGPU_SCRIPTS/02-devices.sh to see what is present." >&2
-    exit 1
-fi
+egpu_resolve_or_die
 RP=$EGPU_ROOT_PORT           # CPU root port whose prefetchable window we move
 TB=$EGPU_TB_UPSTREAM         # first device below it - removed and rescanned
 DEV=$EGPU_GPU                # the card itself
 AUDIO=${DEV%.*}.1            # its HDMI-audio function, if present
 RESCAN_BUS=$EGPU_SECONDARY_BUS
 MODDIR=$EGPU_MODULE
-# The module is built out of tree - module/Makefile explains why. Ask make
-# for the path so it is defined in exactly one place.
-BUILDDIR=$(make --no-print-directory -C "$MODDIR" -s print-builddir 2>/dev/null)
-BUILDDIR=${BUILDDIR:-$EGPU_BUILD}
-KO=$BUILDDIR/egpu_rp_window.ko
-
-egpu_window_defaults           # WIN_BASE / WIN_MB / REBAR_SIZE - one definition
-WIN_END=$((WIN_BASE + WIN_MB * 1024 * 1024 - 1))
+# The module is built out of tree - module/Makefile explains why.
+egpu_module_ko                 # sets EGPU_BUILDDIR and EGPU_KO
 TARGET_BAR=1
 
 LOGDIR=$EGPU_LOGS
 STAMP=$(egpu_stamp)            # inherited from run.sh, so one run = one stamp
-# A parent already capturing the kernel log exports EGPU_KLOG; adopt it so the
-# path reported below is the one actually written to.
-KLOG=${EGPU_KLOG:-$LOGDIR/kernel-$STAMP.log}
 
 egpu_require_root
+# AFTER the root check: REBAR_SIZE defaults to the size the card reports, which
+# means reading its config space.
+egpu_window_defaults           # WIN_BASE / WIN_MB / REBAR_SIZE
+WIN_END=$((WIN_BASE + WIN_MB * 1024 * 1024 - 1))
 egpu_log_open "$LOGDIR" script "$STAMP"
-trap egpu_cleanup EXIT
+trap egpu_log_flush EXIT
 
-echo "=== logs ==="
-echo "  kernel:  $KLOG"
-echo "  script:  $EGPU_LOG"
+echo "=== log: $EGPU_LOG ==="
 
 # ---------------------------------------------------------------- 0
 echo
 echo "=== 0. Preflight checks ==="
-[[ -f $KO ]] || { echo "  ERROR: missing $KO - make -C $MODDIR" >&2; exit 1; }
-vm=$(modinfo "$KO" | awk '/^vermagic:/ { print $2 }'); run=$(uname -r)
+[[ -f $EGPU_KO ]] || { echo "  ERROR: missing $EGPU_KO - make -C $MODDIR" >&2; exit 1; }
+vm=$(modinfo "$EGPU_KO" | awk '/^vermagic:/ { print $2 }'); run=$(uname -r)
 [[ $vm == "$run" ]] || { echo "  ERROR: module built for $vm, running kernel is $run - rebuild" >&2; exit 1; }
 # The logic here is INVERTED: a match must ABORT.
 # With "lsmod | grep -q" the pipeline returned 141 on SIGPIPE, so && never fired
@@ -133,8 +123,6 @@ if [[ -n $conflict ]]; then
     exit 1
 fi
 echo "  target range is free - no collision"
-
-egpu_klog_start "$KLOG"
 
 # ---------------------------------------------------------------- 1
 echo
@@ -189,7 +177,7 @@ mark "AFTER remove $TB"
 echo
 printf "=== 4. insmod egpu_rp_window win_base=%s win_mb=%d rp=%s ===\n" "$WIN_BASE" "$WIN_MB" "$RP"
 mark "BEFORE insmod"
-if insmod "$KO" win_base=$WIN_BASE win_mb=$WIN_MB \
+if insmod "$EGPU_KO" win_base=$WIN_BASE win_mb=$WIN_MB \
         rp_bus=$EGPU_RP_BUS rp_dev=$EGPU_RP_DEV rp_fn=$EGPU_RP_FN; then
     echo "  loaded"
 else
@@ -230,7 +218,7 @@ echo
 echo "=== 6. Result ==="
 if [[ ! -d /sys/bus/pci/devices/$DEV ]]; then
     echo "  the card did not come back. Tree:"; lspci -tv 2>/dev/null | head -20 | sed 's/^/    /'
-    echo "  Log: $KLOG   (a reboot restores the firmware state)"; exit 1
+    echo "  (a reboot restores the firmware state)"; exit 1
 fi
 lspci -vv -s "${DEV#0000:}" | grep -E 'Region [0135]' | sed 's/^\s*/    /'
 echo
@@ -245,13 +233,11 @@ sz=$(egpu_bar_size "$DEV" 1)
 echo
 if [[ $bar1 == 0x0000000000000000 ]]; then
     echo "  BAR1 UNASSIGNED. Last 'can't assign':"
-    grep -E "can't assign|failed to assign" "$KLOG" | tail -12 | sed 's/^.*\] /    /'
+    dmesg | grep -E "can't assign|failed to assign" | tail -12 | sed 's/^.*\] /    /'
 else
     echo "  ================================================"
     echo "  BAR1 = $bar1  size $sz"
     echo "  ================================================"
     echo "  Next: sudo $EGPU_SCRIPTS/05-load-driver.sh"
 fi
-echo
-echo "Log kernel: $KLOG"
-sync
+

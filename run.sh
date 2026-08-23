@@ -87,6 +87,10 @@
 #                                    # matters because you reach for it after a
 #                                    # reset, and a reset drops the card out of
 #                                    # the tunnel.
+#   sudo ./run.sh --plain            # bring the card up and nothing else:
+#                                    # no session restart, no compositor
+#                                    # switch. The explicit way to get what
+#                                    # any flag gets you by accident.
 #   sudo ./run.sh --skip-preflight   # skip the 01-check gate
 #   sudo ./run.sh --primary-gpu      # make the CARD the compositor's primary
 #                                    # GPU, so the monitor attached to it is
@@ -164,7 +168,6 @@ SELFDIR="$DIR"
 # shellcheck source=lib/egpu-lib.sh
 source "$SELFDIR/lib/egpu-lib.sh"
 
-GSPOFF=/etc/modprobe.d/zzzz-egpu-gsp-off.conf
 LOGDIR=$EGPU_LOGS
 STAMP=$(date +%Y%m%d-%H%M%S)
 # ONE stamp for the whole run. 4-, 5-, 6- and 7- pick this up instead of each
@@ -172,12 +175,6 @@ STAMP=$(date +%Y%m%d-%H%M%S)
 # of log files rather than five with unrelated timestamps.
 export EGPU_STAMP=$STAMP
 CAP_SPEED=${CAP_SPEED:-3}
-# WIN_BASE / WIN_MB / REBAR_SIZE, from the one place that defines them, and
-# exported so 4 -> 5 -> 6 all agree. BAR1_WANT is DERIVED from
-# REBAR_SIZE: it used to be the literal "256M" in three places, so overriding
-# REBAR_SIZE turned a correct run into a reported failure.
-egpu_window_defaults
-BAR1_WANT=$(egpu_bar1_expected)
 WANT_RETRAIN=0; WANT_GSP=1; SKIP_PRE=0; RESTART_UI=0
 PRIMARY_GPU=keep
 
@@ -255,11 +252,9 @@ do_off() {
     # The GSP block first, because it is the part that must not fail. Without
     # it the next bring-up walks straight back into the configuration that reset
     # the machine, and it needs no hardware to restore.
-    printf 'options nvidia NVreg_EnableGpuFirmware=0\n' > "$GSPOFF"
-    ok "restored $GSPOFF"
-    shopt -s nullglob
-    for f in "$GSPOFF".disabled-*; do rm -f "$f"; ok "removed $(basename "$f")"; done
-    shopt -u nullglob
+    egpu_gsp_block
+    ok "restored $EGPU_GSPOFF"
+    egpu_gsp_clean
 
     # Topology is resolved OPPORTUNISTICALLY here - see the block comment above.
     # Removing the cap needs the card on the bus; restoring the block does not.
@@ -284,20 +279,17 @@ for a in "$@"; do case $a in
 esac; done
 
 # ---------- FROM HERE ON THE CARD IS REQUIRED ----------
-if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run $EGPU_SCRIPTS/02-devices.sh to see what is present." >&2
-    exit 1
-fi
-# Adopt what discovery found. Skipping this leaves GPU empty, and an empty
-# argument to "lspci -s" matches EVERY device instead of one - which silently
-# turns any BAR check into a multi-line answer.
-GPU=$EGPU_GPU
-BRIDGE=${BRIDGE:-$EGPU_BRIDGE}
+egpu_resolve_or_die
 
 for a in "$@"; do case $a in
     --retrain) WANT_RETRAIN=1 ;;
     --no-gsp)  WANT_GSP=0 ;;
     --skip-preflight) SKIP_PRE=1 ;;
+    # An explicit "no defaults, just bring the card up". Any flag suppresses
+    # them, but relying on that meant reaching for an unrelated one -
+    # --skip-preflight was the example the README used, which also threw away
+    # the 01-check gate. This asks for nothing except the bring-up.
+    --plain) ;;
     --restart-ui) RESTART_UI=1 ;;
     --primary-gpu)    PRIMARY_GPU=on ;;
     --no-primary-gpu) PRIMARY_GPU=off ;;
@@ -338,12 +330,22 @@ if (( $# == 0 )); then
 fi
 
 egpu_require_root
+
+# WIN_BASE / WIN_MB / REBAR_SIZE from the one place that defines them, exported
+# so 03-build-module -> 04-window -> 05-load-driver all agree. DELIBERATELY
+# HERE, after egpu_resolve and after the root check: REBAR_SIZE now defaults to
+# the size the CARD reports for BAR1, and asking the card needs both. BAR1_WANT
+# follows from it, so overriding REBAR_SIZE cannot turn a correct run into a
+# reported failure.
+egpu_window_defaults
+BAR1_WANT=$(egpu_bar1_expected)
+
 egpu_log_open "$LOGDIR" run "$STAMP"
 # run.sh has more early-exit paths than any other script here and was the one
 # missing the flush: without it a "bad ...; exit 1" could return to the prompt
 # before tee wrote anything, so the reason for the abort reached the log but not
 # the screen.
-trap egpu_cleanup EXIT
+trap egpu_log_flush EXIT
 
 echo "==================================================================="
 echo " run  $STAMP"
@@ -496,7 +498,7 @@ else
     # loads the driver deliberately any more, but 04-window issues a PCI
     # remove+rescan, and a rescan generates add events. If anything we failed to
     # block autoloads nvidia off one of those, it must not come up with GSP on.
-    printf 'options nvidia NVreg_EnableGpuFirmware=0\n' > "$GSPOFF"
+    egpu_gsp_block
     ok "GSP block inserted for the duration of the window setup (safety net)"
     [[ -x $EGPU_SCRIPTS/03-build-module.sh ]] || { bad "missing $EGPU_SCRIPTS/03-build-module.sh"; exit 1; }
     if "$EGPU_SCRIPTS/03-build-module.sh" --configure-only; then ok "window setup succeeded"
@@ -538,10 +540,10 @@ egpu_show_link "$BRIDGE" "$GPU"
 # ---------- 6. GSP ----------
 hdr "6. GSP mode"
 if (( WANT_GSP )); then
-    if [[ -f $GSPOFF ]]; then mv "$GSPOFF" "$GSPOFF.disabled-$STAMP"; ok "GSP ENABLED"
+    if egpu_gsp_unblock; then ok "GSP ENABLED"
     else ok "GSP ENABLED (there was no block anyway)"; fi
 else
-    printf 'options nvidia NVreg_EnableGpuFirmware=0\n' > "$GSPOFF"; ok "GSP disabled (--no-gsp)"
+    egpu_gsp_block; ok "GSP disabled (--no-gsp)"
 fi
 
 # ---------- 7. LOAD ----------
@@ -554,45 +556,12 @@ else bad "nvidia-smi failed"; exit 5; fi
 if v=$(egpu_gsp_version); then ok "GSP RUNNING - firmware $v"
 elif (( WANT_GSP )); then warn "GSP requested, but the firmware reports no version"
 else ok "GSP disabled as requested"; fi
-for m in nvidia_uvm nvidia_modeset; do
-    modprobe --ignore-install $m && ok "$m" || warn "$m failed"
-done
-# WHY ub-device-create IS CALLED HERE
-#
-# Ubuntu creates the /dev/nvidia* nodes with /sbin/ub-device-create (shipped by
-# nvidia-kernel-common-610), triggered by a udev rule that fires when nvidia
-# BINDS to the PCI device. At that moment nvidia_modeset is not loaded yet - we
-# load it here, by hand, and our own /etc/udev/rules.d/71-nvidia.rules has the
-# "RUN+=/sbin/modprobe nvidia-modeset" line commented out on purpose (auto-load
-# hung the machine during bring-up).
-#
-# So nothing ever created /dev/nvidia-modeset, and NOTHING VISIBLE BROKE:
-# compute, CUDA, rendering and KMS all use other nodes. Only Vulkan does
-# open("/dev/nvidia-modeset") - it got ENOENT and the driver reported
-# VK_ERROR_UNKNOWN, which cost a full day of chasing a phantom driver bug.
-# vulkaninfo did not even error, it segfaulted.
-#
-# Re-running the helper after nvidia_modeset is up creates the missing node.
-# It is idempotent, so calling it unconditionally is safe.
-if [[ -x /sbin/ub-device-create ]]; then
-    /sbin/ub-device-create 2>/dev/null || true
-fi
-if [[ -e /dev/nvidia-modeset ]]; then
-    ok "/dev/nvidia-modeset present (Vulkan presentation needs it)"
-else
-    # Fall back to creating it directly. Major 195 is shared by nvidia,
-    # nvidia-modeset and nvidiactl (see /proc/devices); nvidiactl is minor 255,
-    # GPUs are 0..N, nvidia-modeset is 254.
-    mknod /dev/nvidia-modeset c 195 254 2>/dev/null && chmod 666 /dev/nvidia-modeset 2>/dev/null \
-        && ok "/dev/nvidia-modeset created by hand" \
-        || bad "/dev/nvidia-modeset MISSING - Vulkan presentation will fail with VK_ERROR_UNKNOWN"
-fi
-# fbdev is repeated for the same reason as modeset: modprobe.d is concatenated
-# and the kernel takes the last value, so stating both here makes the effective
-# configuration deterministic no matter what an older install left behind.
-# Both are the driver's own defaults - see "modinfo -p nvidia-drm".
-modprobe --ignore-install nvidia_drm modeset=1 fbdev=1 \
-    && ok "nvidia_drm modeset=1 fbdev=1" || warn "nvidia_drm failed"
+# nvidia_uvm, nvidia_modeset, /dev/nvidia-modeset and nvidia_drm, in that order.
+# The sequence, and why the device node has to be created by hand, are in
+# egpu_load_display_stack: it was written out twice - here and in
+# 07-link-cap-gsp - and getting that node wrong cost a day of debugging.
+egpu_load_display_stack
+
 sleep 3
 
 # ---------- 8. CARD OUTPUTS ----------

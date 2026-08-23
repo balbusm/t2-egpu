@@ -23,8 +23,14 @@ sudo ./run.sh              # bring the card up, make it primary, restart session
 
 Note that the bare `run.sh` is the *most* consequential form, not the safest:
 with no arguments it applies `--restart-ui` and `--primary-gpu`. It prints that
-and waits 5 s. For a plain bring-up that touches neither, pass any flag, e.g.
-`sudo ./run.sh --skip-preflight`.
+and waits 5 s. For a plain bring-up that touches neither:
+
+```bash
+sudo ./run.sh --plain
+```
+
+Any flag suppresses the two defaults, but `--plain` is the one that asks for
+nothing else.
 
 To let go of the card again without rebooting:
 
@@ -59,7 +65,7 @@ run.sh              the entry point - the only thing in the root you run
 scripts/            the numbered steps, in execution order
 lib/egpu-lib.sh     topology discovery and shared plumbing. Sourced, not run
 module/             source of the window module plus its Makefile
-logs/               run logs
+logs/               run logs, one file per bring-up
 build/              module build output, regenerated
 ```
 
@@ -83,11 +89,11 @@ from any path and under any directory name.
 | `scripts/04-window.sh` | move the prefetchable window above 4 GB, remove and rescan the tunnel subtree |
 | `scripts/05-load-driver.sh` | write the `modprobe.d`/udev blocks, prove they are effective, confirm BAR1, pin runtime PM — then load `nvidia` and check `nvidia-smi`. `--configure-only` does everything except the load, which is what `run.sh` wants: the cap has to come first |
 | `scripts/06-bar-fallback.sh` | **fallback** — `05` calls it only if BAR1 came out unassigned |
-| `scripts/07-link-cap-gsp.sh` | cautious variant: detaches through systemd and captures the kernel log. Also `--off` and `--arm-panic` |
+| `scripts/07-link-cap-gsp.sh` | the cautious way in, for a risky experiment. Arms panic-on-stall (`--arm-panic`), detaches into a transient systemd unit, drops to `multi-user.target` so no compositor is holding the card — then calls `run.sh --plain`. It does **not** implement the bring-up; there is one implementation of that. `--off` hands off to `run.sh --off` |
 | `scripts/08-check-outputs.sh` | card outputs and whether GSP really started. Read-only |
 | `scripts/09-primary-gpu.sh` | **opt-in, verified working.** Make the card the compositor's *primary* GPU via a udev tag, so the monitor on it needs no tunnel round trip. Measured: external **137.9 → 230 fps**, internal **181.1 → ~150** — the cost moves, it does not vanish. Applications then land on the card with no offload variables at all. `--on` is this-boot-only, `--on --persist` survives reboot, `--off` clears both. `run.sh` runs it as *its own* step 10, only with `--primary-gpu` — that number is run.sh's internal step, not this file's position |
 | `scripts/10-teardown.sh` | **untested.** Let go of the card so the cable can be pulled with the machine running. `--release` (drop GPU selection, tag the card `mutter-device-ignore`, restart the session — the cable is *not* safe yet), then `--unload` (unload the stack, verify nothing holds it — now it is). `--off` undoes `--release`, `--status` shows who holds the card. Reachable as `run.sh --release` / `--unload` |
-| `lib/egpu-lib.sh` | shared topology discovery **and shared plumbing** - reporters, logging with a guaranteed flush, kernel-log capture, the window/ReBAR defaults, link-cap and ReBAR register access. Sourced, not run |
+| `lib/egpu-lib.sh` | shared topology discovery **and shared plumbing** — reporters, logging with a guaranteed flush, the GSP kill switch, the KMS load sequence, the mutter udev-rule writer, link-cap and ReBAR register access. Sourced, not run |
 | `module/` | source of the window module plus its Makefile. Rebuilt on every run |
 | `logs/` | run logs |
 
@@ -159,15 +165,19 @@ the concatenation, not file names.
   works regardless of Thunderbolt port, controller, or bus numbering, and it
   recognises NVIDIA, AMD and Intel display controllers.
 - Machine-specific values go through the environment: `GPU`, `BRIDGE`,
-  `WIN_BASE`, `WIN_MB`, `REBAR_SIZE`, `CAP_SPEED`. Their defaults are defined
-  once, in `egpu_window_defaults`, and the expected BAR1 size is derived from
-  `REBAR_SIZE` rather than written down - so overriding it does not make a
-  correct run report a failure.
+  `WIN_BASE`, `WIN_MB`, `REBAR_SIZE`, `CAP_SPEED`. `WIN_BASE` and `WIN_MB`
+  describe a hole in the host address map and keep written-down defaults.
+- **`REBAR_SIZE` has no default — the BAR1 size is read from the card.** It used
+  to be a written-down `8` (256 MB), which is simply what this particular Ada
+  card powers up with, so the ReBAR write was a no-op dressed as a decision.
+  The size now comes from the card's ReBAR control register, and `REBAR_SIZE`
+  is a pure override — which is the only way it was ever really used:
+  `06-bar-fallback` *shrinks* BAR1 when the window cannot fit it.
 - The Resizable BAR capability offset is discovered by walking the extended
   capability list, not hardcoded.
-- One run produces one timestamp: `run.sh` exports `EGPU_STAMP` and every
-  script in the chain uses it, so `run-`, `script-` and `kernel-` logs of the
-  same bring-up share a name.
+- One run produces one log. `run.sh` opens it and every script in the chain
+  adopts it, because a nested `tee` stacks on the outer one rather than
+  replacing it.
 - No reference monitor or captured EDID is needed; any display works.
 
 What the package cannot carry for you: kernel parameters. They need a

@@ -40,16 +40,12 @@ set -uo pipefail
 SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the package is self-locating
 # shellcheck source=lib/egpu-lib.sh
 source "$SELFDIR/../lib/egpu-lib.sh"
-if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run $EGPU_SCRIPTS/02-devices.sh to see what is present." >&2
-    exit 1
-fi
+egpu_resolve_or_die
 
 
 DEV=$EGPU_GPU
 LOGDIR=$EGPU_LOGS
 STAMP=$(egpu_stamp)
-KLOG=${EGPU_KLOG:-$LOGDIR/kernel-$STAMP.log}
 FALLBACK=$EGPU_SCRIPTS/06-bar-fallback.sh
 UDEV_RULE=/etc/udev/rules.d/71-nvidia.rules
 
@@ -62,11 +58,9 @@ esac; done
 
 egpu_require_root
 egpu_log_open "$LOGDIR" script "$STAMP"
-trap egpu_cleanup EXIT
+trap egpu_log_flush EXIT
 
-echo "=== logs ==="
-echo "  kernel:  $KLOG"
-echo "  script:  $EGPU_LOG"
+echo "=== log: $EGPU_LOG ==="
 
 # ---------------------------------------------------------------- 1
 echo
@@ -143,8 +137,9 @@ echo "  wrote /etc/modprobe.d/zz-egpu-nvidia.conf"
 
 echo
 echo "  verification - what 'modprobe nvidia_drm' would do:"
-modprobe --dry-run --show-depends nvidia_drm 2>&1 | sed 's/^/    /'
+# Asked once, printed and tested from the same answer.
 drmplan=$(modprobe --dry-run --show-depends nvidia_drm 2>&1 || true)
+sed 's/^/    /' <<<"$drmplan"
 if grep -q "^install /bin/false" <<<"$drmplan"; then
     echo "  OK: nvidia_drm is blocked"
 else
@@ -212,14 +207,7 @@ fi
 
 # ---------------------------------------------------------------- 4
 echo
-echo "=== 4. Capturing the kernel log ==="
-egpu_klog_start "$KLOG"
-echo "  active"
-
-# ---------------------------------------------------------------- 5
-echo
-echo "=== 5. modprobe nvidia (this module only) ==="
-sync
+echo "=== 4. modprobe nvidia (this module only) ==="
 mark "BEFORE modprobe nvidia"
 if modprobe --ignore-install nvidia; then
     mark "AFTER modprobe nvidia - insmod OK"
@@ -247,7 +235,7 @@ lspci -vv -s "$DEV" 2>/dev/null | grep -E "Kernel driver|Region [013]" | sed 's/
 
 # ---------------------------------------------------------------- 6
 echo
-echo "=== 6. nvidia-smi ==="
+echo "=== 5. nvidia-smi ==="
 mark "BEFORE nvidia-smi"
 if nvidia-smi; then
     mark "AFTER nvidia-smi OK"
@@ -290,9 +278,6 @@ else
 fi
 
 echo
-echo "Log kernel: $KLOG"
-echo
 echo "To revert what this script changed:"
 echo "  sudo rm /etc/udev/rules.d/71-nvidia.rules /etc/modprobe.d/zz-egpu-nvidia.conf"
 echo "  sudo udevadm control --reload"
-sync

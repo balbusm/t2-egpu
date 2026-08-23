@@ -276,7 +276,7 @@ else
     RULE=$RULE_RUN
     ok "this boot only - /run is tmpfs, a reboot removes it"
 fi
-mkdir -p "$(dirname "$RULE")" || { bad "cannot create $(dirname "$RULE")"; exit 1; }
+
 # A copy in the other location would keep overriding after --off of this one,
 # or silently outlive a reboot the user thought was a clean slate.
 OTHER=$([[ $RULE == "$RULE_RUN" ]] && echo "$RULE_ETC" || echo "$RULE_RUN")
@@ -284,18 +284,11 @@ if [[ -f $OTHER ]]; then
     warn "a rule also exists at $OTHER"
     info "Remove both first if that is not what you want: sudo $0 --off"
 fi
-cat > "$RULE" <<EOF
-# Make the external GPU mutter's primary device, so the monitor attached to it
-# is composited and scanned out on the same card - no Thunderbolt round trip.
-# Written by $EGPU_SCRIPTS/09-primary-gpu.sh
-#
-# Matching is on PCI vendor:device, not /dev/dri/cardN: card numbering moves on
-# this machine (card0 is a USB display, the eGPU is hot-plugged).
-#
-# This matches nothing at boot, because the card is not present until run.sh
-# has set up the tunnel. A normal boot is therefore unaffected.
-SUBSYSTEM=="drm", ENV{DEVTYPE}=="drm_minor", ENV{DEVNAME}=="/dev/dri/card[0-9]", SUBSYSTEMS=="pci", ATTRS{vendor}=="$EGPU_CARD_VENDOR", ATTRS{device}=="$EGPU_CARD_DEVICE", TAG+="mutter-device-preferred-primary"
-EOF
+egpu_write_mutter_tag_rule "$RULE" mutter-device-preferred-primary \
+    "Make the external GPU mutter's primary device, so the monitor attached to" \
+    "it is composited and scanned out on the same card - no Thunderbolt round" \
+    "trip." \
+    || { bad "cannot write $RULE"; exit 1; }
 ok "wrote $RULE"
 udevadm control --reload 2>/dev/null && ok "udev rules reloaded"
 udevadm trigger --subsystem-match=drm 2>/dev/null && ok "drm devices retriggered"
