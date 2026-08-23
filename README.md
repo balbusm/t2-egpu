@@ -59,10 +59,9 @@ enclosure loses power: power-cycle the enclosure, then `sudo ./run.sh`.
 | `run.sh` | **entry point.** Check gate → window and BARs → link cap → GSP → driver stack → report. With NO arguments it also applies `--restart-ui` and `--primary-gpu`, so the bare command restarts your session and makes the card the compositor's primary GPU — it says so and waits 5 s first. Any flag suppresses both. Teardown lives here too: `--reset`, `--off`, `--release`, `--unload` - all four are handled before topology discovery, so they work with the card already gone |
 | `1-check.sh` | prerequisites: tools, kernel, headers, driver, **effective** modprobe configuration, udev, cmdline, hardware, package integrity. `--fix` writes the canonical modprobe.d file, `--quiet` returns only an exit code |
 | `2-devices.sh` | list external GPU candidates and their topology. Read-only, no root needed |
-| `3-setup.sh` | root-port window and BARs — calls `4` |
-| `4-build-module.sh` | rebuild the window module for the running kernel → `5` → `6` |
+| `4-build-module.sh` | root-port window and BARs: rebuild the window module for the running kernel → `5` → `6`. `run.sh` calls it with `--configure-only`, so nothing is loaded; `--no-load` stops even earlier. There is no `3-` — it was a wrapper around this one and was removed |
 | `5-window.sh` | move the prefetchable window above 4 GB, remove and rescan the tunnel subtree |
-| `6-load-driver.sh` | block `nvidia_drm`/`nvidia_modeset`, load `nvidia`, check `nvidia-smi` |
+| `6-load-driver.sh` | write the `modprobe.d`/udev blocks, prove they are effective, confirm BAR1, pin runtime PM — then load `nvidia` and check `nvidia-smi`. `--configure-only` does everything except the load, which is what `run.sh` wants: the cap has to come first |
 | `7-bar-fallback.sh` | **fallback** — `6` calls it only if BAR1 came out unassigned |
 | `8-link-cap-gsp.sh` | cautious variant: detaches through systemd and captures the kernel log. Also `--off` and `--arm-panic` |
 | `9-check-outputs.sh` | card outputs and whether GSP really started. Read-only |
@@ -75,7 +74,8 @@ enclosure loses power: power-cycle the enclosure, then `sudo ./run.sh`.
 `run.sh` is what you invoke. The numbers are the position in the pipeline:
 `1`–`7` execute in order, `8`–`9` are variants and diagnostics, `10`–`11` decide
 what *uses* the card once it is up — who composites, and how to let go of it
-again.
+again. The gap at `3` is deliberate: renumbering six files to close it would
+churn every cross-reference in the package for no gain.
 
 ---
 
@@ -91,7 +91,15 @@ The structure of `run.sh` follows from these, and they must not be mixed up:
 3. **GSP only together with the cap** — never GSP without it
 
 That is why `run.sh` inserts `NVreg_EnableGpuFirmware=0` as a safety net for
-the duration of steps 3–6 and removes it only once the cap is in place.
+the duration of the window setup and removes it only once the cap is in place.
+Nothing in that phase loads the driver deliberately — `6-load-driver` is called
+with `--configure-only` — but `5-window` issues a PCI `remove`+`rescan`, and a
+rescan generates add events. An autoload that slipped past the blocks must not
+come up with GSP on.
+
+It is also why the driver is loaded exactly **once**, in step 7. It used to be
+loaded during the window setup and unloaded again in step 4 to make room for the
+cap: a whole cycle for nothing, and a bind with no cap in place.
 
 ---
 

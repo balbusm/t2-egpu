@@ -400,7 +400,7 @@ hdr "9. Package integrity"
 # cannot notice a file that is absent - but anything matching the numbered
 # pattern is additionally checked for the execute bit, so a new script cannot be
 # silently non-executable.
-for f in run.sh 1-check.sh 2-devices.sh 3-setup.sh 4-build-module.sh 5-window.sh \
+for f in run.sh 1-check.sh 2-devices.sh 4-build-module.sh 5-window.sh \
          6-load-driver.sh 7-bar-fallback.sh 8-link-cap-gsp.sh 9-check-outputs.sh \
          10-primary-gpu.sh 11-teardown.sh; do
     [[ -x $SELFDIR/$f ]] && pass "$f" || fail "$f - missing or not executable"

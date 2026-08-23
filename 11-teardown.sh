@@ -64,8 +64,9 @@
 #     [[ -d /sys/module/egpu_rp_window ]] && { echo "  ERROR: module already loaded - reboot"; exit 1; }
 #
 # So after a replug there are two outcomes: either the kernel assigns BARs by
-# itself inside the window that is still in place - and run.sh skips 3-setup
-# and works - or it does not, and run.sh stops asking for a reboot. Which one
+# itself inside the window that is still in place - and run.sh skips the
+# window setup and works - or it does not, and run.sh stops asking for a
+# reboot. Which one
 # you get is UNTESTED. Plan on needing a reboot before using the card again.
 #
 # WHAT THIS ACTUALLY BUYS YOU

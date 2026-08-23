@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 4-build-module.sh - rebuild the window module, then run 5-window and
-# 6-load-driver. Called by 3-setup.sh.
+# 6-load-driver. Called by run.sh; usable on its own.
 #
 # WHY REBUILD EVERY TIME
 #
@@ -14,6 +14,16 @@
 #   2. make clean all in module/, verify vermagic against the running kernel
 #   3. 5-window.sh      - move the root-port window, remove+rescan, assign BARs
 #   4. only if BAR1 came out assigned: 6-load-driver.sh
+#
+# HOW FAR IT GOES
+#
+#   (no argument)       through 6-load-driver, which LOADS the driver. Note
+#                       that the driver then comes up with no link speed cap.
+#   --configure-only    through 6-load-driver --configure-only: /etc is written
+#                       and BAR1 confirmed, but nothing is loaded. THIS IS WHAT
+#                       run.sh USES, so that the cap can be applied before the
+#                       driver ever binds.
+#   --no-load           stop after 5-window. Nothing under /etc is touched.
 #
 # Variables passed through to 5-window.sh (all optional):
 #   WIN_BASE   base address of the new prefetchable window
@@ -40,8 +50,13 @@ KO=$BUILDDIR/egpu_rp_window.ko
 WINDOW=$SELFDIR/5-window.sh
 DRIVER=$SELFDIR/6-load-driver.sh
 DEV=$EGPU_GPU
-NO_LOAD=0
-[[ ${1:-} == --no-load ]] && NO_LOAD=1
+MODE=full
+for a in "$@"; do case $a in
+    --no-load)        MODE=no-load ;;
+    --configure-only) MODE=configure-only ;;
+    -h|--help) egpu_usage "$0"; exit 0 ;;
+    *) echo "Unknown argument: $a" >&2; exit 1 ;;
+esac; done
 
 # --- Gate BEFORE redirecting to tee, so the message is not swallowed ---
 if ! modinfo -k "$RUN" nvidia >/dev/null 2>&1; then
@@ -95,8 +110,8 @@ echo "=== 3. 5-window - root-port window and BARs ==="
 # egpu_window_defaults EXPORTS these, so 5-window inherits them - no need to
 # rebuild the environment by hand. It also means there is one statement of the
 # defaults instead of three: this script used to print "0xf0000000, 192 MB, BAR1
-# 128 MB" while 3-setup.sh exported 0x4010000000/1024/8, and the message was
-# unreachable in the normal path anyway.
+# 128 MB" while the old 3-setup wrapper exported 0x4010000000/1024/8, and the
+# message was unreachable in the normal path anyway.
 egpu_window_defaults
 printf "  window %s +%s MB, BAR1 %s\n" "$WIN_BASE" "$WIN_MB" "$(egpu_bar1_expected)"
 if "$WINDOW"; then
@@ -116,12 +131,16 @@ echo "  BAR1 = $bar1  size $(egpu_bar_size "$DEV" 1)"
 case $bar1 in
     0x000000004*) echo "  (above 4 GB - space beyond 4 GB works on this machine)" ;;
 esac
-if (( NO_LOAD )); then
-    echo "  --no-load: stopping here."
+if [[ $MODE == no-load ]]; then
+    echo "  --no-load: stopping here. Nothing under /etc has been touched."
     echo "  By hand: sudo $DRIVER"
     exit 0
 fi
 
 echo
+if [[ $MODE == configure-only ]]; then
+    echo "=== 5. 6-load-driver --configure-only - write /etc, load nothing ==="
+    exec "$DRIVER" --configure-only
+fi
 echo "=== 5. 6-load-driver - block nvidia-drm, modprobe nvidia, check nvidia-smi ==="
 exec "$DRIVER"

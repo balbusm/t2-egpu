@@ -251,8 +251,8 @@ EGPU_TEE_PID=
 #
 # NESTING IS THE TRAP HERE, and it is why EGPU_LOG is exported.
 #
-# run.sh calls 3-setup, which calls 4-build-module, which calls 5-window and
-# then execs 6-load-driver, which calls 7-bar-fallback. Every one of them used
+# run.sh calls 4-build-module, which calls 5-window and then execs
+# 6-load-driver, which calls 7-bar-fallback. Every one of them used
 # to open its own tee - and a nested tee does not replace the outer one, it
 # stacks on top of it: the inner script's stdout goes to the inner tee, whose
 # own stdout is still the OUTER tee's pipe. So each line was written once per
@@ -342,8 +342,9 @@ mark() {
 # ---------------------------------------------------------------- the window
 #
 # ONE source of truth for the root-port window and the BAR1 size code. These
-# used to be stated in three places with two different values: 3-setup.sh
-# exported 0x4010000000/1024/8 while 5-window.sh defaulted to 0xf0000000/192/7,
+# used to be stated in three places with two different values: the old
+# 3-setup wrapper exported 0x4010000000/1024/8 while 5-window.sh defaulted to
+# 0xf0000000/192/7,
 # and 4-build-module.sh printed a third copy as a message. Running 5-window.sh
 # the way its own header documents therefore produced a 128 MB BAR1, which
 # run.sh then rejected as a failure.

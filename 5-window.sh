@@ -40,10 +40,10 @@
 # To undo everything: REBOOT.
 #
 # The defaults come from lib/egpu-lib.sh (egpu_window_defaults) and are the
-# SAME ones run.sh and 3-setup.sh use. They used to be stated separately here,
-# with different values - 0xf0000000/192/7 against 3-setup's
-# 0x4010000000/1024/8 - so running this script the way its own header documented
-# produced a 128 MB BAR1 that run.sh then reported as a failure.
+# SAME ones run.sh and 4-build-module.sh use. They used to be stated separately
+# here, with different values - 0xf0000000/192/7 against the old 3-setup
+# wrapper's 0x4010000000/1024/8 - so running this script the way its own header
+# documented produced a 128 MB BAR1 that run.sh then reported as a failure.
 #
 #   sudo ./5-window.sh
 #   sudo WIN_BASE=0xf0000000 WIN_MB=192 REBAR_SIZE=7 ./5-window.sh   # override

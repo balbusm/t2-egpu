@@ -17,6 +17,23 @@
 # If BAR1 turns out unassigned at this point, 7-bar-fallback.sh is called to
 # escalate. In a normal run that never happens, because 5-window already
 # assigned it.
+#
+# TWO PHASES, AND WHY THE SPLIT EXISTS
+#
+#   --configure-only   sections 1-3b: write the modprobe.d and udev files, prove
+#                      the block is effective, confirm BAR1, pin runtime PM.
+#                      Loads NOTHING.
+#   (no argument)      the above, then load nvidia and check nvidia-smi.
+#
+# run.sh asks for --configure-only. Without it the bring-up loaded nvidia here
+# and run.sh unloaded it again three steps later to apply the link cap - a full
+# load/unload cycle for nothing, and a load with no cap in place, which is the
+# configuration this whole package exists to avoid. The GSP block was the only
+# thing making it survivable.
+#
+# Run with no argument to load the driver here, which is what you want when
+# invoking this script by hand. Note that it then comes up WITHOUT the link
+# speed cap: see the warning at the end.
 
 set -uo pipefail
 
@@ -35,6 +52,13 @@ STAMP=$(egpu_stamp)
 KLOG=${EGPU_KLOG:-$LOGDIR/kernel-$STAMP.log}
 FALLBACK=$SELFDIR/7-bar-fallback.sh
 UDEV_RULE=/etc/udev/rules.d/71-nvidia.rules
+
+CONFIGURE_ONLY=0
+for a in "$@"; do case $a in
+    --configure-only) CONFIGURE_ONLY=1 ;;
+    -h|--help) egpu_usage "$0"; exit 0 ;;
+    *) echo "Unknown argument: $a" >&2; exit 1 ;;
+esac; done
 
 egpu_require_root
 egpu_log_open "$LOGDIR" script "$STAMP"
@@ -160,6 +184,32 @@ egpu_bar_assigned "$DEV" 1 || { echo "  ERROR: BAR1 still unassigned" >&2; exit 
 printf '  BAR1 = %s  size %s  OK\n' "$(egpu_bar_base "$DEV" 1)" "$(egpu_bar_size "$DEV" 1)"
 lspci -vv -s "$DEV" 2>/dev/null | grep -E "Region [013]" | sed 's/^/  /'
 
+# ---------------------------------------------------------------- 3b
+echo
+echo "=== 3b. Runtime PM of the card ==="
+# Pinned to "on" BEFORE the driver can bind, not after. D3cold over Thunderbolt
+# is a known way to get "fallen off the bus", and this used to sit in the load
+# section - so the --configure-only path, which is the one run.sh takes, would
+# have skipped it. The udev rule and NVreg_DynamicPowerManagement=0 say the same
+# thing; this is the belt to their braces.
+printf "  power/control = %s\n" "$(cat /sys/bus/pci/devices/$DEV/power/control 2>/dev/null)"
+echo on > /sys/bus/pci/devices/$DEV/power/control 2>/dev/null \
+    && echo "  forced to 'on'"
+
+if (( CONFIGURE_ONLY )); then
+    echo
+    echo "=== --configure-only: stopping before the driver load ==="
+    echo "  /etc is configured, the block is proven effective, BAR1 is assigned,"
+    echo "  runtime PM is pinned. Nothing is loaded."
+    echo "  The caller loads the driver itself, AFTER the link speed cap - which"
+    echo "  is the whole point of not loading it here."
+    echo
+    echo "  To revert what this script changed:"
+    echo "    sudo rm $UDEV_RULE /etc/modprobe.d/zz-egpu-nvidia.conf"
+    echo "    sudo udevadm control --reload"
+    exit 0
+fi
+
 # ---------------------------------------------------------------- 4
 echo
 echo "=== 4. Capturing the kernel log ==="
@@ -190,11 +240,6 @@ if [[ -d /sys/module/nvidia_drm || -d /sys/module/nvidia_modeset ]]; then
 else
     echo "  OK: nvidia_drm and nvidia_modeset are NOT loaded"
 fi
-
-echo
-echo "  runtime PM of the card:"
-printf "    power/control = %s\n" "$(cat /sys/bus/pci/devices/$DEV/power/control 2>/dev/null)"
-echo on > /sys/bus/pci/devices/$DEV/power/control 2>/dev/null && echo "    forced to 'on'"
 
 echo
 echo "  driver bound to the device:"

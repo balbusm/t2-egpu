@@ -9,8 +9,10 @@
 #
 #   1-check      prerequisites. Missing files under /etc show up not as an
 #                error but as a machine RESET, so they are verified first.
-#   3-setup      root-port window and BARs (calls 4-build-module -> 5-window
-#                -> 6-load-driver).
+#   window+BARs  4-build-module --configure-only: rebuild the window module,
+#                move the root-port window (5-window), write the modprobe.d and
+#                udev blocks and confirm BAR1 (6-load-driver --configure-only).
+#                Loads NOTHING - see constraint 2 below.
 #   link cap     Target Link Speed + Hardware Autonomous Speed Disable on the
 #                bridge above the card.
 #   GSP          firmware enabled, then the driver stack is loaded.
@@ -37,8 +39,14 @@
 #      bus (an instant reset, seen five times)
 #   3. GSP only together with the cap - never GSP without it
 #
-# That is why this script inserts NVreg_EnableGpuFirmware=0 as a safety net
-# for the duration of 3-setup and removes it only once the cap is in place.
+# That is why this script inserts NVreg_EnableGpuFirmware=0 as a safety net for
+# the duration of the window setup and removes it only once the cap is in place:
+# the remove+rescan in 5-window generates PCI add events, and an autoload we
+# failed to block must not come up with GSP on.
+#
+# It is also why the window setup runs with --configure-only. It used to end in
+# "modprobe nvidia" and step 4 unloaded it again - a load/unload cycle for
+# nothing, and a bind with no cap.
 #
 # RISK
 #
@@ -165,7 +173,7 @@ STAMP=$(date +%Y%m%d-%H%M%S)
 export EGPU_STAMP=$STAMP
 CAP_SPEED=${CAP_SPEED:-3}
 # WIN_BASE / WIN_MB / REBAR_SIZE, from the one place that defines them, and
-# exported so 3-setup -> 4 -> 5 all agree. BAR1_WANT is DERIVED from
+# exported so 4 -> 5 -> 6 all agree. BAR1_WANT is DERIVED from
 # REBAR_SIZE: it used to be the literal "256M" in three places, so overriding
 # REBAR_SIZE turned a correct run into a reported failure.
 egpu_window_defaults
@@ -243,7 +251,7 @@ do_off() {
     unload_stack || warn "a reboot fixes this"
 
     # The GSP block first, because it is the part that must not fail. Without
-    # it the next 3-setup walks straight back into the configuration that reset
+    # it the next bring-up walks straight back into the configuration that reset
     # the machine, and it needs no hardware to restore.
     printf 'options nvidia NVreg_EnableGpuFirmware=0\n' > "$GSPOFF"
     ok "restored $GSPOFF"
@@ -472,17 +480,28 @@ if v=$(egpu_gsp_version); then ok "GSP already running ($v)"; else warn "GSP not
 # ---------- 2. WINDOW AND BARs ----------
 hdr "2. Root-port window and BARs"
 if [[ $(bar1) == "$BAR1_WANT" ]]; then
-    ok "BAR1 = $BAR1_WANT, window already in place - skipping 3-setup"
+    ok "BAR1 = $BAR1_WANT, window already in place - skipping the window setup"
 else
-    warn "BAR1 not set up - running 3-setup.sh"
-    # CRITICAL: 3-setup ends in modprobe nvidia. Without the GSP block and
-    # without the cap this is exactly the configuration that reset the machine.
+    warn "BAR1 not set up - running 4-build-module.sh --configure-only"
+    # --configure-only IS THE POINT. This step used to end in "modprobe nvidia"
+    # (through the old 3-setup wrapper) and step 4 below unloaded it again to
+    # apply the cap: a whole load/unload cycle for nothing, and a bind with no
+    # cap in place - the configuration that reset the machine five times. The
+    # driver is now loaded exactly once, in step 7, after the cap.
+    #
+    # THE GSP BLOCK STAYS, for a different reason than before. Nothing here
+    # loads the driver deliberately any more, but 5-window issues a PCI
+    # remove+rescan, and a rescan generates add events. If anything we failed to
+    # block autoloads nvidia off one of those, it must not come up with GSP on.
     printf 'options nvidia NVreg_EnableGpuFirmware=0\n' > "$GSPOFF"
-    ok "GSP block inserted for the duration of 3-setup (safety net)"
-    [[ -x $DIR/3-setup.sh ]] || { bad "missing $DIR/3-setup.sh"; exit 1; }
-    if "$DIR/3-setup.sh"; then ok "3-setup succeeded"
-    else bad "3-setup failed - no point continuing"; exit 1; fi
+    ok "GSP block inserted for the duration of the window setup (safety net)"
+    [[ -x $DIR/4-build-module.sh ]] || { bad "missing $DIR/4-build-module.sh"; exit 1; }
+    if "$DIR/4-build-module.sh" --configure-only; then ok "window setup succeeded"
+    else bad "window setup failed - no point continuing"; exit 1; fi
     [[ $(bar1) == "$BAR1_WANT" ]] || { bad "BAR1 still != $BAR1_WANT ($(bar1))"; exit 1; }
+    # No check for "did something load nvidia anyway" here: step 4 below unloads
+    # the stack unconditionally, before the cap, and has to keep doing so for
+    # the case where the driver was already loaded when you invoked run.sh.
 fi
 
 # ---------- 3. BRIDGE ----------

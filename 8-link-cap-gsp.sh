@@ -24,7 +24,7 @@
 # WHAT IT DOES NOT TOUCH
 #
 # The root-port window and the BAR assignment. Link speed and GSP are not
-# resources, so there is no need to repeat 3-setup.
+# resources, so there is no need to repeat the window setup.
 #
 # RISK
 #
@@ -87,7 +87,8 @@ egpu_require_root "[--off] [--retrain]"
 # HAVE_HW=0 means the card is not on the bus. When applying the cap that is
 # fatal. With --off it is NOT: after a failed attempt the machine resets,
 # the card usually drops out of the tunnel, and what matters then is restoring
-# the GSP block - otherwise 3-setup.sh walks straight back into it. Reverting
+# the GSP block - otherwise the next bring-up walks straight back into it.
+# Reverting
 # must ALWAYS work.
 HAVE_HW=1
 if [[ ! -d /sys/bus/pci/devices/$GPU ]]; then
@@ -156,7 +157,7 @@ echo "==================================================================="
 #
 # Must be reliable and work with no card on the bus, because this is what
 # you run after a failed attempt, often right after the machine reset.
-# Loads nothing - restores the configuration and exits. Then: reboot + 3-setup.
+# Loads nothing - restores the configuration and exits. Then: reboot + run.sh.
 if (( WANT_OFF )); then
     echo
     echo "=== 1. Unloading the nvidia stack (if any) ==="
@@ -332,7 +333,7 @@ cat <<EOF
       sudo CAP_SPEED=2 $0 --retrain
       then CAP_SPEED=1 (Gen1 - large bandwidth loss, but it tests the mechanism)
   Back to the known-good configuration:
-      sudo $0 --off  &&  sudo reboot  &&  sudo ./3-setup.sh
+      sudo $0 --off  &&  sudo reboot  &&  sudo ./run.sh
   If it hangs: the kernel log is in $KLOG (synced every 0.2 s). pstore has NO backend
                (measured: ramoops has no reservation), so do not expect a post-reset dump.
 EOF
