@@ -243,31 +243,20 @@ if nvidia-smi; then
     echo "=============================================================="
     echo "  THE CARD RESPONDS"
     echo "=============================================================="
-    cat <<'EOF'
+    cat <<EOF
 
-This confirms the GPU works. Read the BAR1 size from section 3 above.
+This confirms the GPU works. BAR1 size is in section 3 above.
 
-For compute (CUDA) you also need:
+Only the core module is loaded. nvidia_uvm (CUDA), nvidia_modeset,
+/dev/nvidia-modeset and nvidia_drm come next, in that order and only after the
+link-speed cap - which is what run.sh is for:
 
-  sudo modprobe --ignore-install nvidia_uvm
+    sudo $EGPU_ROOT/run.sh --plain
 
-For display output from the card's own connectors, load KMS as well - but note
-that run.sh does this for you, in the right order and after the link-speed cap:
-
-  sudo modprobe --ignore-install nvidia_modeset
-  sudo modprobe --ignore-install nvidia_drm modeset=1 fbdev=1
-  sudo /sbin/ub-device-create          # creates /dev/nvidia-modeset
-
-Do not skip that last one. The udev rule that normally runs ub-device-create
-fires when nvidia binds to the PCI device, which is BEFORE nvidia_modeset is
-loaded here, so /dev/nvidia-modeset never appears. Nothing visible breaks -
-compute, CUDA, rendering and KMS use other nodes - but Vulkan presentation
-fails with VK_ERROR_UNKNOWN and vulkaninfo segfaults.
-
-Loading nvidia_drm by hand WITHOUT "modeset=1" gives no display, because a
-conflicting "options nvidia_drm modeset=0" may exist in modprobe.d and the
-kernel takes the last repeated parameter. Run ./scripts/01-check.sh to see the effective
-value.
+Doing it by hand means reproducing egpu_load_display_stack in lib/egpu-lib.sh,
+including the /dev/nvidia-modeset node that nothing else creates. Read the
+comment above that function first; getting it wrong shows up as
+VK_ERROR_UNKNOWN from Vulkan and nowhere else.
 EOF
 else
     rc=$?; mark "AFTER nvidia-smi ERROR rc=$rc"

@@ -542,6 +542,7 @@ hdr "6. GSP mode"
 if (( WANT_GSP )); then
     if egpu_gsp_unblock; then ok "GSP ENABLED"
     else ok "GSP ENABLED (there was no block anyway)"; fi
+    egpu_gsp_clean          # sweep up copies left by the rename-instead-of-delete era
 else
     egpu_gsp_block; ok "GSP disabled (--no-gsp)"
 fi
