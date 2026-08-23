@@ -26,7 +26,7 @@ MODE=candidates
 for a in "$@"; do case $a in
     --all) MODE=all ;;
     --bdf) MODE=bdf ;;
-    -h|--help) awk 'NR>1 && !/^#/{exit} NR>1{sub(/^# ?/,""); print}' "$0"; exit 0 ;;
+    -h|--help) egpu_usage "$0"; exit 0 ;;
     *) echo "Unknown argument: $a" >&2; exit 2 ;;
 esac; done
 

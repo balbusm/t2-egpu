@@ -56,7 +56,7 @@ enclosure loses power: power-cycle the enclosure, then `sudo ./run.sh`.
 
 | file | role |
 |---|---|
-| `run.sh` | **entry point.** Check gate → window and BARs → link cap → GSP → driver stack → report. With NO arguments it also applies `--restart-ui` and `--primary-gpu`, so the bare command restarts your session and makes the card the compositor's primary GPU — it says so and waits 5 s first. Any flag suppresses both. Teardown lives here too: `--reset`, `--release`, `--unload` |
+| `run.sh` | **entry point.** Check gate → window and BARs → link cap → GSP → driver stack → report. With NO arguments it also applies `--restart-ui` and `--primary-gpu`, so the bare command restarts your session and makes the card the compositor's primary GPU — it says so and waits 5 s first. Any flag suppresses both. Teardown lives here too: `--reset`, `--off`, `--release`, `--unload` - all four are handled before topology discovery, so they work with the card already gone |
 | `1-check.sh` | prerequisites: tools, kernel, headers, driver, **effective** modprobe configuration, udev, cmdline, hardware, package integrity. `--fix` writes the canonical modprobe.d file, `--quiet` returns only an exit code |
 | `2-devices.sh` | list external GPU candidates and their topology. Read-only, no root needed |
 | `3-setup.sh` | root-port window and BARs — calls `4` |
@@ -68,7 +68,7 @@ enclosure loses power: power-cycle the enclosure, then `sudo ./run.sh`.
 | `9-check-outputs.sh` | card outputs and whether GSP really started. Read-only |
 | `10-primary-gpu.sh` | **opt-in, verified working.** Make the card the compositor's *primary* GPU via a udev tag, so the monitor on it needs no tunnel round trip. Measured: external **137.9 → 230 fps**, internal **181.1 → ~150** — the cost moves, it does not vanish. Applications then land on the card with no offload variables at all. `--on` is this-boot-only, `--on --persist` survives reboot, `--off` clears both. Step 10 in `run.sh`, only with `--primary-gpu` |
 | `11-teardown.sh` | **untested.** Let go of the card so the cable can be pulled with the machine running. `--release` (drop GPU selection, tag the card `mutter-device-ignore`, restart the session — the cable is *not* safe yet), then `--unload` (unload the stack, verify nothing holds it — now it is). `--off` undoes `--release`, `--status` shows who holds the card. Reachable as `run.sh --release` / `--unload` |
-| `lib/egpu-lib.sh` | shared topology discovery. Sourced, not run |
+| `lib/egpu-lib.sh` | shared topology discovery **and shared plumbing** - reporters, logging with a guaranteed flush, kernel-log capture, the window/ReBAR defaults, link-cap and ReBAR register access. Sourced, not run |
 | `module/` | source of the window module plus its Makefile. Rebuilt on every run |
 | `logs/` | run logs |
 
@@ -128,13 +128,27 @@ the concatenation, not file names.
   works regardless of Thunderbolt port, controller, or bus numbering, and it
   recognises NVIDIA, AMD and Intel display controllers.
 - Machine-specific values go through the environment: `GPU`, `BRIDGE`,
-  `WIN_BASE`, `WIN_MB`, `REBAR_SIZE`, `CAP_SPEED`.
+  `WIN_BASE`, `WIN_MB`, `REBAR_SIZE`, `CAP_SPEED`. Their defaults are defined
+  once, in `egpu_window_defaults`, and the expected BAR1 size is derived from
+  `REBAR_SIZE` rather than written down - so overriding it does not make a
+  correct run report a failure.
+- The Resizable BAR capability offset is discovered by walking the extended
+  capability list, not hardcoded.
+- One run produces one timestamp: `run.sh` exports `EGPU_STAMP` and every
+  script in the chain uses it, so `run-`, `script-` and `kernel-` logs of the
+  same bring-up share a name.
 - No reference monitor or captured EDID is needed; any display works.
 
-What the package cannot carry for you: kernel parameters (they need a
-bootloader edit and a reboot) and udev rules, if your distribution loads the
-driver through `RUN+=modprobe`. `1-check.sh` detects both and prints what is
-needed.
+What the package cannot carry for you: kernel parameters. They need a
+bootloader edit and a reboot, so `1-check.sh` only reports them.
+
+udev rules it *does* carry, and that is worth knowing: `6-load-driver.sh`
+writes `/etc/udev/rules.d/71-nvidia.rules` on every run, shadowing the
+distribution's copy in `/lib` in order to drop the `RUN+=modprobe` lines that
+would load the driver before the cap. The content is Ubuntu-specific
+(`ub-device-create`, `nvidia-persistenced`). Anything that was there before is
+kept once as `71-nvidia.rules.orig`; `1-check.sh` §5 checks the effect either
+way.
 
 ---
 

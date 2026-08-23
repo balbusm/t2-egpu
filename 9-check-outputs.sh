@@ -26,8 +26,17 @@
 #   sudo ./9-check-outputs.sh --force   # force a re-detect on every connector
 
 set -uo pipefail
-[[ $EUID -eq 0 ]] || { echo "Run with sudo: sudo $0 [--force]" >&2; exit 1; }
-FORCE=0; [[ ${1:-} == --force ]] && FORCE=1
+SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/egpu-lib.sh
+source "$SELFDIR/lib/egpu-lib.sh"
+
+FORCE=0
+for a in "$@"; do case $a in
+    --force) FORCE=1 ;;
+    -h|--help) egpu_usage "$0"; exit 0 ;;
+    *) echo "Unknown argument: $a" >&2; exit 2 ;;
+esac; done
+egpu_require_root "[--force]"
 
 echo "=== 1. Is GSP actually running ==="
 if [[ ! -d /sys/module/nvidia ]]; then
@@ -35,29 +44,23 @@ if [[ ! -d /sys/module/nvidia ]]; then
 fi
 printf "  EnableGpuFirmware (requested mode): %s\n" \
     "$(grep -oP 'EnableGpuFirmware: \K\S+' /proc/driver/nvidia/params 2>/dev/null || echo '?')"
-gspv=$(nvidia-smi -q 2>/dev/null | grep -i 'GSP Firmware Version' | sed 's/.*: *//')
-if [[ -n $gspv && $gspv != N/A ]]; then
+if gspv=$(egpu_gsp_version); then
     echo "  GSP Firmware Version: $gspv   <- FIRMWARE IS RUNNING"
 else
-    echo "  GSP Firmware Version: ${gspv:-missing}   <- GSP IS NOT RUNNING"
+    echo "  GSP Firmware Version: missing   <- GSP IS NOT RUNNING"
 fi
-printf "  modules: "; for m in nvidia nvidia_uvm nvidia_modeset nvidia_drm; do
-    [[ -d /sys/module/$m ]] && printf "%s " "$m"; done; echo
+printf "  modules: %s\n" "$(egpu_loaded_modules)"
 echo "  (18 = 0x12 = MODE_DEFAULT|ALLOW_UNSIGNED, i.e. 'the driver decides' -"
 echo "   That is NOT proof. The proof is the firmware version above.)"
 
 echo
 echo "=== 2. DRM card owned by nvidia ==="
-nvcard=""
-for c in /sys/class/drm/card[0-9]*; do
-    [[ -e $c/device/driver ]] || continue
-    [[ $(basename "$(readlink -f "$c/device/driver")") == nvidia ]] && nvcard=$(basename "$c")
-done
-if [[ -z $nvcard ]]; then
+if ! egpu_nv_card; then
     echo "  none - nvidia_drm not loaded, or KMS inactive." >&2
     echo "  Load it: sudo modprobe --ignore-install nvidia_drm modeset=1 fbdev=1" >&2
     exit 1
 fi
+nvcard=$EGPU_CARD
 echo "  $nvcard"
 
 if (( FORCE )); then
@@ -74,20 +77,19 @@ fi
 
 echo
 echo "=== 3. Card connectors ==="
-printf "  %-16s %-14s %-8s %s\n" CONNECTOR STATUS EDID "FIRST MODE"
 found=0
-for conn in /sys/class/drm/$nvcard-*; do
-    [[ -e $conn/status ]] || continue
-    st=$(cat "$conn/status"); ed=$(wc -c < "$conn/edid" 2>/dev/null || echo 0)
-    [[ $st == connected ]] && found=1
-    printf "  %-16s %-14s %-8s %s\n" "${conn##*/$nvcard-}" "$st" "${ed}B" \
-        "$(head -1 "$conn/modes" 2>/dev/null || echo '-')"
-done
+egpu_print_connectors "$nvcard" && found=1
 
 echo
-echo "=== 4. Bledy AUX/EDID z nvidia-modeset ==="
-if dmesg | grep -i 'nvidia-modeset' | grep -iE 'edid|aux' | tail -8 | sed 's/^.*\] /  /' | grep -q .; then
-    :
+echo "=== 4. AUX/EDID errors from nvidia-modeset ==="
+# CAPTURED, NOT PIPED INTO "grep -q". It used to end in "| grep -q ." with an
+# empty then-branch, so grep consumed the messages and the section printed
+# NOTHING whenever there actually were errors - the exact opposite of what it is
+# for. Same family of mistake as the pipefail/grep -q traps noted in 5-window.sh
+# and 11-teardown.sh.
+aux=$(dmesg | grep -i 'nvidia-modeset' | grep -iE 'edid|aux' | tail -8 | sed 's/^.*\] /  /')
+if [[ -n $aux ]]; then
+    printf '%s\n' "$aux"
 else
     echo "  (no messages - either the card reads EDID, or the driver never probed)"
 fi

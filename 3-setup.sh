@@ -32,15 +32,13 @@ fi
 
 DEV=$EGPU_GPU
 BUILD=$SELFDIR/4-build-module.sh
-export WIN_BASE=${WIN_BASE:-0x4010000000}
-export WIN_MB=${WIN_MB:-1024}
-export REBAR_SIZE=${REBAR_SIZE:-8}
+egpu_window_defaults           # WIN_BASE / WIN_MB / REBAR_SIZE, exported
 
-[[ $EUID -eq 0 ]] || { echo "Run with sudo: sudo $0" >&2; exit 1; }
+egpu_require_root
 [[ -x $BUILD ]] || { echo "ERROR: missing $BUILD" >&2; exit 1; }
 
 echo "==================================================================="
-echo " 3-setup: window $WIN_BASE (+${WIN_MB}M), BAR1 = $((2 ** REBAR_SIZE)) MB"
+echo " 3-setup: window $WIN_BASE (+${WIN_MB}M), BAR1 = $(egpu_bar1_expected)"
 echo "==================================================================="
 
 # --- preflight checks, so we do not enter 4-build-module blindly ---
@@ -48,7 +46,7 @@ if [[ ! -d /sys/bus/pci/devices/$DEV ]]; then
     echo "ERROR: card $DEV not present." >&2
     echo "  Plug the enclosure in or power-cycle it - after a hard" >&2
     echo "  reboot the card often drops out of the Thunderbolt tunnel." >&2
-    echo "  Check: lspci -s "${DEV#*:}"" >&2
+    echo "  Check: lspci -s ${DEV#*:}" >&2
     exit 1
 fi
 if [[ -d /sys/module/egpu_rp_window ]]; then
@@ -87,9 +85,8 @@ echo
 echo "==================================================================="
 echo " SUMMARY"
 echo "==================================================================="
-printf "  BAR1:    %s\n" "$(lspci -vv -s "${DEV#0000:}" 2>/dev/null | grep 'Region 1' | sed 's/^\s*//')"
-printf "  modules:  "; for m in nvidia nvidia_uvm nvidia_modeset nvidia_drm; do
-    [[ -d /sys/module/$m ]] && printf "%s " "$m"; done; echo
+printf "  BAR1:    %s\n" "$(egpu_bar_size "$DEV" 1)"
+printf "  modules: %s\n" "$(egpu_loaded_modules)"
 printf "  GPU:     %s\n" "$(nvidia-smi --query-gpu=name,memory.total,temperature.gpu,power.draw,pstate --format=csv,noheader 2>&1)"
 echo
 echo "  NOTE: 3-setup alone is NOT enough - nvidia is loaded WITHOUT the link"

@@ -51,24 +51,20 @@ if ! modinfo -k "$RUN" nvidia >/dev/null 2>&1; then
     for k in $(ls /lib/modules 2>/dev/null | sort -V); do
         if modinfo -k "$k" nvidia >/dev/null 2>&1; then echo "    $k" >&2; found=1; fi
     done
-    (( found )) || echo "    (zadne - sudo dkms autoinstall)" >&2
+    (( found )) || echo "    (none - sudo dkms autoinstall)" >&2
     echo "Boot into one of them, or build: sudo dkms autoinstall -k $RUN" >&2
     exit 1
 fi
-[[ $EUID -eq 0 ]] || { echo "Run with sudo: sudo $0" >&2; exit 1; }
+egpu_require_root
 [[ -x $WINDOW ]] || { echo "ERROR: missing $WINDOW" >&2; exit 1; }
 [[ -x $DRIVER  ]] || { echo "ERROR: missing $DRIVER"  >&2; exit 1; }
 
 LOGDIR=$SELFDIR/logs
-STAMP=$(date +%Y%m%d-%H%M%S)
-SLOG=$LOGDIR/script-$STAMP.log
-mkdir -p "$LOGDIR"; chown "${SUDO_USER:-root}:" "$LOGDIR" 2>/dev/null || true
-exec > >(tee -a "$SLOG") 2>&1
-TEE_PID=$!
-_flush_tee() { exec 1>&- 2>&- ; wait "$TEE_PID" 2>/dev/null; }
-trap _flush_tee EXIT
+STAMP=$(egpu_stamp)
+egpu_log_open "$LOGDIR" script "$STAMP"
+trap egpu_cleanup EXIT
 
-echo "=== log: $SLOG ==="
+echo "=== log: $EGPU_LOG ==="
 
 echo
 echo "=== 1. Preflight checks ==="
@@ -95,17 +91,15 @@ printf "  vermagic: %s\n" "${vm:-none}"
 [[ ${vm:-} == "$RUN" ]] || { echo "  ERROR: the module did not build for $RUN" >&2; exit 1; }
 
 echo
-echo "=== 3. 5-window - root-port window + BAR-y ==="
-ENVARGS=()
-for v in WIN_BASE WIN_MB REBAR_SIZE; do
-    [[ -n ${!v:-} ]] && ENVARGS+=("$v=${!v}")
-done
-if (( ${#ENVARGS[@]} )); then
-    echo "  parameters passed to 5-window: ${ENVARGS[*]}"
-else
-    echo "  default parameters 5-window (0xf0000000, 192 MB, BAR1 128 MB)"
-fi
-if env "${ENVARGS[@]}" "$WINDOW"; then
+echo "=== 3. 5-window - root-port window and BARs ==="
+# egpu_window_defaults EXPORTS these, so 5-window inherits them - no need to
+# rebuild the environment by hand. It also means there is one statement of the
+# defaults instead of three: this script used to print "0xf0000000, 192 MB, BAR1
+# 128 MB" while 3-setup.sh exported 0x4010000000/1024/8, and the message was
+# unreachable in the normal path anyway.
+egpu_window_defaults
+printf "  window %s +%s MB, BAR1 %s\n" "$WIN_BASE" "$WIN_MB" "$(egpu_bar1_expected)"
+if "$WINDOW"; then
     echo "  5-window finished"
 else
     rc=$?; echo "  5-window returned $rc - not loading the driver" >&2; exit $rc
@@ -113,13 +107,12 @@ fi
 
 echo
 echo "=== 4. Gate to 6-load-driver ==="
-bar1=$(awk 'NR==2 {print $1}' /sys/bus/pci/devices/$DEV/resource 2>/dev/null || echo x)
-sz=$(lspci -vv -s "${DEV#0000:}" 2>/dev/null | sed -n 's/.*Region 1:.*\[size=\([^]]*\)\].*/\1/p')
-if [[ $bar1 == 0x0000000000000000 || $bar1 == x ]]; then
+if ! egpu_bar_assigned "$DEV" 1; then
     echo "  BAR1 unassigned - not loading the driver. See the log of 5-window above." >&2
     exit 1
 fi
-echo "  BAR1 = $bar1  rozmiar $sz"
+bar1=$(egpu_bar_base "$DEV" 1)
+echo "  BAR1 = $bar1  size $(egpu_bar_size "$DEV" 1)"
 case $bar1 in
     0x000000004*) echo "  (above 4 GB - space beyond 4 GB works on this machine)" ;;
 esac

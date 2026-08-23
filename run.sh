@@ -72,7 +72,13 @@
 #   sudo CAP_SPEED=2 ./run.sh        # lower link ceiling (1..4, default 3)
 #   sudo ./run.sh --retrain          # force a link retrain
 #   sudo ./run.sh --no-gsp           # load without GSP
-#   sudo ./run.sh --off              # revert to the no-GSP configuration
+#   sudo ./run.sh --off              # revert to the no-GSP configuration:
+#                                    # restores the GSP block and removes the
+#                                    # link cap. Works with the card ABSENT -
+#                                    # handled before topology discovery, which
+#                                    # matters because you reach for it after a
+#                                    # reset, and a reset drops the card out of
+#                                    # the tunnel.
 #   sudo ./run.sh --skip-preflight   # skip the 1-check gate
 #   sudo ./run.sh --primary-gpu      # make the CARD the compositor's primary
 #                                    # GPU, so the monitor attached to it is
@@ -147,35 +153,72 @@ BRIDGE=${BRIDGE:-}
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the package is self-locating
 SELFDIR="$DIR"
 
-# ---------- --reset: HANDLED HERE ON PURPOSE, BEFORE ANYTHING ELSE ----------
-#
-# --reset undoes the GPU-SELECTION layer - who COMPOSITES (step 10) - and puts
-# it back to stock.
-#
-# It runs before egpu_resolve deliberately. The reason you reach for --reset is
-# usually that the card is going away or is already gone (see the hot-unplug
-# notes in FINDINGS.md), and egpu_resolve exits when there is no card to
-# resolve. Parsing it with the other flags would make it unusable in exactly
-# the situation it exists for.
-#
-# NOT the same as --off:
-#   --off    reverts the DRIVER-level configuration (GSP, link cap). Needs the
-#            card, and ends with "reboot, then run again".
-#   --reset  touches no driver state at all. Only undoes GPU selection.
-# --release and --unload delegate wholesale to 11-teardown.sh, and for the same
-# reason they live up here: you reach for them when the card is on its way out,
-# so they must not depend on discovering it. "exec" keeps it a pure front door -
-# no duplicated restart logic, one place that knows how teardown works.
-for a in "$@"; do case $a in
-    --release) exec "$DIR/11-teardown.sh" --release ;;
-    --unload)  exec "$DIR/11-teardown.sh" --unload ;;
-esac; done
+# shellcheck source=lib/egpu-lib.sh
+source "$SELFDIR/lib/egpu-lib.sh"
 
-for a in "$@"; do
-    [[ $a == --reset ]] || continue
+GSPOFF=/etc/modprobe.d/zzzz-egpu-gsp-off.conf
+LOGDIR=$DIR/logs
+STAMP=$(date +%Y%m%d-%H%M%S)
+# ONE stamp for the whole run. 4-, 5-, 6- and 7- pick this up instead of each
+# calling date(1) for itself, so a single bring-up produces one correlated set
+# of log files rather than five with unrelated timestamps.
+export EGPU_STAMP=$STAMP
+CAP_SPEED=${CAP_SPEED:-3}
+# WIN_BASE / WIN_MB / REBAR_SIZE, from the one place that defines them, and
+# exported so 3-setup -> 4 -> 5 all agree. BAR1_WANT is DERIVED from
+# REBAR_SIZE: it used to be the literal "256M" in three places, so overriding
+# REBAR_SIZE turned a correct run into a reported failure.
+egpu_window_defaults
+BAR1_WANT=$(egpu_bar1_expected)
+WANT_RETRAIN=0; WANT_GSP=1; SKIP_PRE=0; RESTART_UI=0
+PRIMARY_GPU=keep
+
+[[ $CAP_SPEED =~ ^[1-4]$ ]] || { echo "ERROR: CAP_SPEED must read 1..4" >&2; exit 1; }
+
+bar1() { egpu_bar_size "${GPU:-}" 1; }
+
+# The unload loop lives in the library; the ADVICE on failure does not, because
+# it depends on which module refused. nvidia_drm held by the compositor is
+# expected and means "restart the session"; anything else means "find the
+# process".
+unload_stack() {
+    egpu_unload_stack && return 0
+    if [[ ${EGPU_UNLOAD_FAILED:-} == nvidia_drm ]]; then
+        info "Normal while a graphical session is running: the compositor"
+        info "holds /dev/dri/card0 open. The card is already up - what"
+        info "needs restarting is the session, not the card:"
+        info "    sudo $0 --restart-ui"
+    else
+        info "check: sudo lsof /dev/nvidia*  ;  systemctl stop nvidia-persistenced"
+    fi
+    return 1
+}
+
+# ---------- ACTIONS THAT MUST WORK WITH THE CARD ABSENT ----------
+#
+# All four are handled BEFORE egpu_resolve, on purpose. You reach for every one
+# of them when the card is on its way out or already gone - and egpu_resolve
+# exits when there is no card to resolve, so parsing them with the other flags
+# would make them unusable in exactly the situations they exist for.
+#
+# --off USED TO BE PARSED WITH THE REST, and that was a real hole: run.sh
+# itself prints "power-cycle the enclosure, then: sudo $0 --off" after the card
+# falls off the bus, which is precisely the state in which the card is absent.
+# The advice could not be followed. 8-link-cap-gsp.sh had this right all along
+# ("Reverting must ALWAYS work") and this now matches it.
+#
+# WHAT EACH ONE UNDOES:
+#   --reset    the GPU-SELECTION layer only - who composites (step 10).
+#              No driver state whatsoever.
+#   --off      the DRIVER-level configuration: restores the GSP block and
+#              removes the link cap. Ends with "reboot, then run again".
+#   --release  } delegated wholesale to 11-teardown.sh. "exec" keeps this a
+#   --unload   } pure front door: one place knows how teardown works.
+
+do_reset() {
     printf '\n\033[1m=== RESET - GPU selection back to stock ===\033[0m\n'
-    [[ $EUID -eq 0 ]] || { echo "Run with sudo: sudo $0 --reset" >&2; exit 1; }
-    rc=0
+    egpu_require_root --reset
+    local rc=0
     # Compositing first: it is the one that needs root and the one that decides
     # whether the desktop depends on the card at all.
     if [[ -x $DIR/10-primary-gpu.sh ]]; then
@@ -191,11 +234,46 @@ for a in "$@"; do
     echo "  more, which is the state you want before unplugging - but note the"
     echo "  real blocker for that is still nvidia_drm being held by the"
     echo "  compositor. See 'Hot unplug' in FINDINGS.md."
-    exit $rc
-done
+    return $rc
+}
 
-# shellcheck source=lib/egpu-lib.sh
-source "$SELFDIR/lib/egpu-lib.sh"
+do_off() {
+    hdr "REVERTING to the no-GSP configuration"
+    egpu_require_root --off
+    unload_stack || warn "a reboot fixes this"
+
+    # The GSP block first, because it is the part that must not fail. Without
+    # it the next 3-setup walks straight back into the configuration that reset
+    # the machine, and it needs no hardware to restore.
+    printf 'options nvidia NVreg_EnableGpuFirmware=0\n' > "$GSPOFF"
+    ok "restored $GSPOFF"
+    shopt -s nullglob
+    for f in "$GSPOFF".disabled-*; do rm -f "$f"; ok "removed $(basename "$f")"; done
+    shopt -u nullglob
+
+    # Topology is resolved OPPORTUNISTICALLY here - see the block comment above.
+    # Removing the cap needs the card on the bus; restoring the block does not.
+    if egpu_resolve "${GPU:-}" >/dev/null 2>&1 && [[ -d $PCI_DEVICES/$EGPU_GPU ]]; then
+        egpu_cap_clear "${BRIDGE:-$EGPU_BRIDGE}" "$EGPU_GPU"
+        ok "cap removed"
+        egpu_show_link "${BRIDGE:-$EGPU_BRIDGE}" "$EGPU_GPU"
+    else
+        warn "card not present - no cap to remove"
+        info "it would not have survived the reset that sent you here anyway"
+    fi
+    echo; echo "Next: sudo reboot, then sudo $0"
+    return 0
+}
+
+for a in "$@"; do case $a in
+    -h|--help) egpu_usage "$0"; exit 0 ;;
+    --release) exec "$DIR/11-teardown.sh" --release ;;
+    --unload)  exec "$DIR/11-teardown.sh" --unload ;;
+    --reset)   do_reset; exit $? ;;
+    --off)     do_off;   exit $? ;;
+esac; done
+
+# ---------- FROM HERE ON THE CARD IS REQUIRED ----------
 if ! egpu_resolve "${GPU:-}"; then
     echo "Cannot resolve eGPU topology. Run ./2-devices.sh to see what is present." >&2
     exit 1
@@ -206,26 +284,16 @@ fi
 GPU=$EGPU_GPU
 BRIDGE=${BRIDGE:-$EGPU_BRIDGE}
 
-GSPOFF=/etc/modprobe.d/zzzz-egpu-gsp-off.conf
-LOGDIR=$DIR/logs
-STAMP=$(date +%Y%m%d-%H%M%S)
-SLOG=$LOGDIR/run-$STAMP.log
-CAP_SPEED=${CAP_SPEED:-3}
-WANT_RETRAIN=0; WANT_GSP=1; WANT_OFF=0; SKIP_PRE=0; RESTART_UI=0
-PRIMARY_GPU=keep
-
 for a in "$@"; do case $a in
     --retrain) WANT_RETRAIN=1 ;;
     --no-gsp)  WANT_GSP=0 ;;
-    --off)     WANT_OFF=1; WANT_GSP=0; SKIP_PRE=1 ;;
     --skip-preflight) SKIP_PRE=1 ;;
     --restart-ui) RESTART_UI=1 ;;
     --primary-gpu)    PRIMARY_GPU=on ;;
     --no-primary-gpu) PRIMARY_GPU=off ;;
-    # All three are handled above, before egpu_resolve, so that they work with
-    # the card absent. Listed here only so they are not "unknown argument".
-    --reset|--release|--unload) ;;
-    -h|--help) awk 'NR>1 && !/^#/{exit} NR>1{sub(/^# ?/,""); print}' "$0"; exit 0 ;;
+    # Handled above, before egpu_resolve, so they work with the card absent.
+    # Listed here only so they are not "unknown argument".
+    --reset|--release|--unload|--off|-h|--help) ;;
     *) echo "Unknown argument: $a" >&2; exit 1 ;;
 esac; done
 
@@ -259,72 +327,17 @@ if (( $# == 0 )); then
     DEFAULTS_APPLIED=1
 fi
 
-LNKCTL2=CAP_EXP+30.w
-LNKCTL=CAP_EXP+10.w
-LNKSTA=CAP_EXP+12.w
-
-[[ $EUID -eq 0 ]] || { echo "Run with sudo: sudo $0" >&2; exit 1; }
-[[ $CAP_SPEED =~ ^[1-4]$ ]] || { echo "ERROR: CAP_SPEED must read 1..4" >&2; exit 1; }
-
-mkdir -p "$LOGDIR"; chown "${SUDO_USER:-root}:" "$LOGDIR" 2>/dev/null || true
-exec > >(tee -a "$SLOG") 2>&1
-
-ok()   { printf '  \033[32m+\033[0m %s\n' "$*"; }
-warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
-bad()  { printf '  \033[31mx\033[0m %s\n' "$*"; }
-hdr()  { printf '\n\033[1m=== %s ===\033[0m\n' "$*"; }
-# NOTE: "info" must be defined here. It is also a real binary (/usr/bin/info,
-# the GNU documentation reader), so a missing definition does not fail loudly -
-# bash silently runs the reader and the intended message is lost.
-info() { printf '    %s\n' "$*"; }
-
-gsp_running() {
-    local v; v=$(nvidia-smi -q 2>/dev/null | grep -i 'GSP Firmware Version' | sed 's/.*: *//')
-    [[ -n $v && $v != N/A ]] && { echo "$v"; return 0; }; return 1
-}
-# One value, for one device. "head -1" is a guard: if GPU were ever empty,
-# lspci would report every device on the bus and the caller would compare a
-# multi-line string against "256M".
-bar1() {
-    [[ -n ${GPU:-} ]] || return 1
-    lspci -vv -s "${GPU#*:}" 2>/dev/null \
-        | grep -oP 'Region 1:.*\[size=\K[^]]+' | head -1
-}
-unload_stack() {
-    local m
-    for m in nvidia_drm nvidia_modeset nvidia_uvm nvidia; do
-        [[ -d /sys/module/$m ]] || continue
-        if modprobe -r "$m" 2>/dev/null; then ok "$m unloaded"
-        else
-            bad "$m NOT unloaded (refcnt=$(cat /sys/module/$m/refcnt 2>/dev/null))"
-            if [[ $m == nvidia_drm ]]; then
-                info "Normal while a graphical session is running: the compositor"
-                info "holds /dev/dri/card0 open. The card is already up - what"
-                info "needs restarting is the session, not the card:"
-                info "    sudo $0 --restart-ui"
-            else
-                info "check: sudo lsof /dev/nvidia*  ;  systemctl stop nvidia-persistenced"
-            fi
-            return 1
-        fi
-    done
-    return 0
-}
-show_link() {
-    local dev c2 st
-    for dev in "$BRIDGE" "$GPU"; do
-        c2=$(setpci -s "$dev" "$LNKCTL2" 2>/dev/null) || { echo "      $dev: no read"; continue; }
-        st=$(setpci -s "$dev" "$LNKSTA" 2>/dev/null) || st=0000
-        printf "      %s  Target=Gen%d  bit5=%s  LnkSta=Gen%d\n" "$dev" \
-            "$((0x$c2 & 0xf))" \
-            "$([[ $((0x$c2 & 0x20)) -ne 0 ]] && echo yes || echo no)" \
-            "$((0x$st & 0xf))"
-    done
-}
+egpu_require_root
+egpu_log_open "$LOGDIR" run "$STAMP"
+# run.sh has more early-exit paths than any other script here and was the one
+# missing the flush: without it a "bad ...; exit 1" could return to the prompt
+# before tee wrote anything, so the reason for the abort reached the log but not
+# the screen.
+trap egpu_cleanup EXIT
 
 echo "==================================================================="
 echo " run  $STAMP"
-echo " log: $SLOG"
+echo " log: $EGPU_LOG"
 echo "==================================================================="
 
 # Never let the defaults be a surprise - state them in the terminal and in the
@@ -346,26 +359,6 @@ if (( DEFAULTS_APPLIED )); then
     sleep 5
 fi
 
-# ---------- REVERT ----------
-if (( WANT_OFF )); then
-    hdr "REVERTING to the no-GSP configuration"
-    unload_stack || warn "a reboot fixes this"
-    printf 'options nvidia NVreg_EnableGpuFirmware=0\n' > "$GSPOFF"
-    ok "restored $GSPOFF"
-    shopt -s nullglob; for f in "$GSPOFF".disabled-*; do rm -f "$f"; ok "removed $(basename "$f")"; done; shopt -u nullglob
-    if [[ -d /sys/bus/pci/devices/$GPU ]]; then
-        BRIDGE=${BRIDGE:-$(basename "$(dirname "$(readlink -f /sys/bus/pci/devices/"$GPU")")")}
-        for dev in "$BRIDGE" "$GPU"; do
-            setpci -s "$dev" "$LNKCTL2"=0004:000f 2>/dev/null
-            setpci -s "$dev" "$LNKCTL2"=0000:0020 2>/dev/null
-        done
-        ok "cap removed"
-    else
-        warn "card not present - no cap to remove"
-    fi
-    echo; echo "Next: sudo reboot, then sudo $0"
-    exit 0
-fi
 # ---------- RESTART UI ----------
 #
 # --restart-ui is a MODIFIER, not a separate action:
@@ -392,7 +385,7 @@ fi
 # place. Anything less and the bring-up has work to do.
 card_is_up() {
     [[ -d /sys/module/nvidia ]] || return 1
-    [[ $(bar1) == 256M ]] || return 1
+    [[ $(bar1) == "$BAR1_WANT" ]] || return 1
     nvidia-smi >/dev/null 2>&1 || return 1
     return 0
 }
@@ -427,7 +420,7 @@ if (( RESTART_UI )) && card_is_up; then
     hdr "Card is already up - restarting the session only"
     printf "      %-12s %s\n" "GPU" "$GPU"
     printf "      %-12s %s\n" "BAR1" "$(bar1)"
-    v=$(gsp_running) && printf "      %-12s %s\n" "GSP" "$v"
+    v=$(egpu_gsp_version) && printf "      %-12s %s\n" "GSP" "$v"
     info "The bring-up is skipped: nothing to do to the card, and the"
     info "compositor is holding it open anyway."
     restart_ui; exit $?
@@ -473,14 +466,13 @@ if [[ ! -d /sys/bus/pci/devices/$GPU ]]; then
 fi
 ok "card $GPU present  ($EGPU_VENDOR_NAME)"
 printf "      %-12s %s\n" "BAR1" "$(bar1 || echo 'none - window not set up')"
-printf "      %-12s %s\n" "modules" "$(for m in nvidia nvidia_uvm nvidia_modeset nvidia_drm egpu_rp_window; do
-    [[ -d /sys/module/$m ]] && printf '%s ' "$m"; done; echo)"
-if v=$(gsp_running); then ok "GSP already running ($v)"; else warn "GSP not running (yet)"; fi
+printf "      %-12s %s\n" "modules" "$(egpu_loaded_modules)"
+if v=$(egpu_gsp_version); then ok "GSP already running ($v)"; else warn "GSP not running (yet)"; fi
 
 # ---------- 2. WINDOW AND BARs ----------
 hdr "2. Root-port window and BARs"
-if [[ $(bar1) == 256M ]]; then
-    ok "BAR1 = 256M, window already in place - skipping 3-setup"
+if [[ $(bar1) == "$BAR1_WANT" ]]; then
+    ok "BAR1 = $BAR1_WANT, window already in place - skipping 3-setup"
 else
     warn "BAR1 not set up - running 3-setup.sh"
     # CRITICAL: 3-setup ends in modprobe nvidia. Without the GSP block and
@@ -490,7 +482,7 @@ else
     [[ -x $DIR/3-setup.sh ]] || { bad "missing $DIR/3-setup.sh"; exit 1; }
     if "$DIR/3-setup.sh"; then ok "3-setup succeeded"
     else bad "3-setup failed - no point continuing"; exit 1; fi
-    [[ $(bar1) == 256M ]] || { bad "BAR1 still != 256M ($(bar1))"; exit 1; }
+    [[ $(bar1) == "$BAR1_WANT" ]] || { bad "BAR1 still != $BAR1_WANT ($(bar1))"; exit 1; }
 fi
 
 # ---------- 3. BRIDGE ----------
@@ -499,7 +491,7 @@ ok "$BRIDGE"
 lspci -s "${BRIDGE#*:}" 2>/dev/null | sed 's/^/      /'
 lspci -s "${BRIDGE#*:}" 2>/dev/null | grep -qiE 'thunderbolt|usb4' \
     || { bad "not a Thunderbolt/USB4 bridge - aborting"; exit 1; }
-show_link
+egpu_show_link "$BRIDGE" "$GPU"
 
 # ---------- 4. UNLOAD ----------
 hdr "4. Unloading the nvidia stack (the cap must precede the bind)"
@@ -509,22 +501,17 @@ unload_stack || { bad "cannot unload - aborting"; exit 1; }
 
 # ---------- 5. LINK CAP ----------
 hdr "5. PCIe link speed cap (Gen$CAP_SPEED + bit 5)"
-TGT=$(printf '%04x' "$CAP_SPEED")
-for dev in "$BRIDGE" "$GPU"; do
-    setpci -s "$dev" "$LNKCTL2"="$TGT":000f || { bad "writing Target on $dev failed"; exit 2; }
-    setpci -s "$dev" "$LNKCTL2"=0020:0020   || { bad "writing bit 5 on $dev failed"; exit 2; }
-    ok "$dev -> Target Gen$CAP_SPEED + bit5"
-done
+egpu_cap_apply "$CAP_SPEED" "$BRIDGE" "$GPU" || exit 2
 if (( WANT_RETRAIN )); then
     warn "forcing a retrain on $BRIDGE - the tunnel may drop here"
-    setpci -s "$BRIDGE" "$LNKCTL"=0020:0020 && ok "retrain issued"
+    setpci -s "$BRIDGE" "$EGPU_LNKCTL"=0020:0020 && ok "retrain issued"
     sleep 2
     [[ -d /sys/bus/pci/devices/$GPU ]] || {
         bad "THE CARD FELL OFF THE BUS"
         info "power-cycle the enclosure, then: sudo $0 --off && sudo reboot"; exit 3; }
     ok "card survived the retrain"
 fi
-show_link
+egpu_show_link "$BRIDGE" "$GPU"
 
 # ---------- 6. GSP ----------
 hdr "6. GSP mode"
@@ -542,7 +529,7 @@ ok "nvidia loaded"
 sleep 2
 if nvidia-smi >/dev/null 2>&1; then ok "nvidia-smi passes (this is where the reset used to happen)"
 else bad "nvidia-smi failed"; exit 5; fi
-if v=$(gsp_running); then ok "GSP RUNNING - firmware $v"
+if v=$(egpu_gsp_version); then ok "GSP RUNNING - firmware $v"
 elif (( WANT_GSP )); then warn "GSP requested, but the firmware reports no version"
 else ok "GSP disabled as requested"; fi
 for m in nvidia_uvm nvidia_modeset; do
@@ -588,24 +575,12 @@ sleep 3
 
 # ---------- 8. CARD OUTPUTS ----------
 hdr "8. Card outputs"
-nvcard=""
-for c in /sys/class/drm/card[0-9]*; do
-    [[ -e $c/device/driver ]] || continue
-    [[ $(basename "$(readlink -f "$c/device/driver")") == nvidia ]] && nvcard=$(basename "$c")
-done
-if [[ -z $nvcard ]]; then
+if ! egpu_nv_card; then
     warn "no DRM card owned by nvidia - KMS inactive"
 else
-    printf "      %-12s %-14s %-8s %s\n" CONNECTOR STATUS EDID MODE
-    live=0
-    for conn in /sys/class/drm/$nvcard-*; do
-        [[ -e $conn/status ]] || continue
-        st=$(cat "$conn/status"); ed=$(wc -c < "$conn/edid" 2>/dev/null || echo 0)
-        [[ $st == connected ]] && live=1
-        printf "      %-12s %-14s %-8s %s\n" "${conn##*/$nvcard-}" "$st" "${ed}B" \
-            "$(head -1 "$conn/modes" 2>/dev/null || echo '-')"
-    done
-    (( live )) && ok "card sees a monitor" || warn "card sees no monitor (plugged in? powered on?)"
+    egpu_print_connectors "$EGPU_CARD" \
+        && ok "card sees a monitor" \
+        || warn "card sees no monitor (plugged in? powered on?)"
 fi
 
 # A connector can be "connected" with a valid EDID and still show nothing,
@@ -620,12 +595,12 @@ fi
 # not re-probe on its own. Replugging the cable generates that event.
 #
 # So the cheap remedy comes first. Restarting the session is the fallback.
-if [[ -n ${nvcard:-} ]]; then
+if [[ -n ${EGPU_CARD:-} ]]; then
     stuck=""
-    for conn in /sys/class/drm/$nvcard-*; do
+    for conn in /sys/class/drm/$EGPU_CARD-*; do
         [[ -e $conn/status && -e $conn/enabled ]] || continue
         [[ $(cat "$conn/status") == connected && $(cat "$conn/enabled") == disabled ]] \
-            && stuck="$stuck ${conn##*/$nvcard-}"
+            && stuck="$stuck ${conn##*/$EGPU_CARD-}"
     done
     if [[ -n $stuck ]]; then
         echo
@@ -695,4 +670,4 @@ echo "  Who composites:       $DIR/10-primary-gpu.sh --status"
 echo "  GPU selection reset:  sudo $0 --reset"
 echo "  Restart the session:  sudo $0 --restart-ui"
 echo "  Revert to no-GSP:     sudo $0 --off"
-echo "  Log of this run:      $SLOG"
+echo "  Log of this run:      $EGPU_LOG"

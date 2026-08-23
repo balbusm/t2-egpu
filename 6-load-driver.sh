@@ -31,31 +31,35 @@ fi
 
 DEV=$EGPU_GPU
 LOGDIR=$SELFDIR/logs
-STAMP=$(date +%Y%m%d-%H%M%S)
-KLOG=$LOGDIR/kernel-$STAMP.log
-SLOG=$LOGDIR/script-$STAMP.log
+STAMP=$(egpu_stamp)
+KLOG=${EGPU_KLOG:-$LOGDIR/kernel-$STAMP.log}
 FALLBACK=$SELFDIR/7-bar-fallback.sh
+UDEV_RULE=/etc/udev/rules.d/71-nvidia.rules
 
-[[ $EUID -eq 0 ]] || { echo "Run with sudo: sudo $0" >&2; exit 1; }
-mkdir -p "$LOGDIR"; chown "${SUDO_USER:-root}:" "$LOGDIR" 2>/dev/null || true
-exec > >(tee -a "$SLOG") 2>&1
+egpu_require_root
+egpu_log_open "$LOGDIR" script "$STAMP"
+trap egpu_cleanup EXIT
 
-BG=()
-cleanup() { for p in "${BG[@]:-}"; do kill "$p" 2>/dev/null || true; done; sync; }
-trap cleanup EXIT
-mark() { printf '\n########## %s ##########\n' "$1" >> "$KLOG"; sync; echo ">>> $1"; }
-
-echo "=== logi ==="
+echo "=== logs ==="
 echo "  kernel:  $KLOG"
-echo "  log: $SLOG"
+echo "  script:  $EGPU_LOG"
 
 # ---------------------------------------------------------------- 1
 echo
 echo "=== 1. Shadowing the udev rule 71-nvidia.rules ==="
-cat > /etc/udev/rules.d/71-nvidia.rules <<'EOF'
+# This OVERWRITES a file under /etc, and the content below is Ubuntu-specific
+# (ub-device-create, nvidia-persistenced). Keep one backup of whatever was there
+# before, once, so an existing hand-edited rule is recoverable. Not on every run:
+# this script runs on every bring-up and would otherwise bury the original under
+# copies of its own output.
+if [[ -f $UDEV_RULE && ! -f $UDEV_RULE.orig ]]; then
+    cp -a "$UDEV_RULE" "$UDEV_RULE.orig" \
+        && echo "  kept the previous file as $UDEV_RULE.orig"
+fi
+cat > "$UDEV_RULE" <<'EOF'
 # Shadows /lib/udev/rules.d/71-nvidia.rules for a Thunderbolt eGPU.
 #
-# USUNIETE wzgledem oryginalu:
+# REMOVED relative to the original:
 #   RUN+="/sbin/modprobe nvidia-modeset"   - hangs during initialisation
 #   RUN+="/sbin/modprobe nvidia-drm"       - "[nvidia-drm] Loading driver" = hang
 #   RUN+="/sbin/modprobe nvidia-uvm"       - not needed for nvidia-smi
@@ -69,7 +73,7 @@ SUBSYSTEM=="pci", ATTRS{vendor}=="0x10de", DRIVERS=="nvidia", TAG+="seat", TAG+=
 # nvidia-persistenced
 ACTION=="add", DEVPATH=="/bus/pci/drivers/nvidia", TAG+="systemd", ENV{SYSTEMD_WANTS}="nvidia-persistenced.service"
 
-# Wezly /dev/nvidia*
+# /dev/nvidia* nodes
 ACTION=="add", DEVPATH=="/bus/pci/drivers/nvidia", RUN+="/sbin/ub-device-create"
 ACTION=="add", DEVPATH=="/module/nvidia_uvm", SUBSYSTEM=="module", RUN+="/sbin/ub-device-create"
 
@@ -77,7 +81,7 @@ ACTION=="add", DEVPATH=="/module/nvidia_uvm", SUBSYSTEM=="module", RUN+="/sbin/u
 ACTION=="bind", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{class}=="0x03[0-9]*", TEST=="power/control", ATTR{power/control}="on"
 ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{class}=="0x040300", TEST=="power/control", ATTR{power/control}="on"
 EOF
-echo "  wrote /etc/udev/rules.d/71-nvidia.rules"
+echo "  wrote $UDEV_RULE"
 udevadm control --reload && echo "  udev reloaded"
 
 # ---------------------------------------------------------------- 2
@@ -132,7 +136,7 @@ else
     echo "    MISSING - DKMS did not build nvidia for this kernel." >&2
     echo "    Fix: rebuild the driver for the running kernel, e.g." >&2
     echo "      sudo dkms autoinstall -k \"$(uname -r)\"" >&2
-    echo "    Diagnoza: sudo ./1-check.sh" >&2
+    echo "    Diagnose: sudo ./1-check.sh" >&2
     exit 1
 fi
 echo
@@ -147,24 +151,20 @@ echo "  OK: DynamicPowerManagement=0"
 # ---------------------------------------------------------------- 3
 echo
 echo "=== 3. BAR1 ==="
-bar1=$(awk 'NR==2 { print $1 }' /sys/bus/pci/devices/$DEV/resource 2>/dev/null || echo x)
-if [[ $bar1 == 0x0000000000000000 || $bar1 == x ]]; then
+if ! egpu_bar_assigned "$DEV" 1; then
     echo "  BAR1 unassigned - running 7-bar-fallback.sh"
     [[ -x $FALLBACK ]] || { echo "  ERROR: missing $FALLBACK" >&2; exit 1; }
     "$FALLBACK" || { echo "  7-bar-fallback could not do it - aborting" >&2; exit 1; }
-    bar1=$(awk 'NR==2 { print $1 }' /sys/bus/pci/devices/$DEV/resource 2>/dev/null || echo x)
 fi
-[[ $bar1 != 0x0000000000000000 && $bar1 != x ]] || {
-    echo "  ERROR: BAR1 still unassigned" >&2; exit 1; }
-echo "  BAR1 = $bar1  OK"
+egpu_bar_assigned "$DEV" 1 || { echo "  ERROR: BAR1 still unassigned" >&2; exit 1; }
+printf '  BAR1 = %s  size %s  OK\n' "$(egpu_bar_base "$DEV" 1)" "$(egpu_bar_size "$DEV" 1)"
 lspci -vv -s "$DEV" 2>/dev/null | grep -E "Region [013]" | sed 's/^/  /'
 
 # ---------------------------------------------------------------- 4
 echo
 echo "=== 4. Capturing the kernel log ==="
-stdbuf -oL dmesg -w >> "$KLOG" &  BG+=($!)
-( while :; do sync; sleep 0.2; done ) & BG+=($!)
-sleep 1; echo "  aktywne"
+egpu_klog_start "$KLOG"
+echo "  active"
 
 # ---------------------------------------------------------------- 5
 echo
@@ -237,10 +237,10 @@ kernel takes the last repeated parameter. Run ./1-check.sh to see the effective
 value.
 EOF
 else
-    rc=$?; mark "PO nvidia-smi ERROR rc=$rc"
+    rc=$?; mark "AFTER nvidia-smi ERROR rc=$rc"
     echo "  nvidia-smi rc=$rc" >&2
     echo
-    echo "  Komunikaty NVRM:"
+    echo "  NVRM messages:"
     dmesg | grep -iE "nvrm|nvidia" | tail -30 | sed 's/^/    /'
 fi
 

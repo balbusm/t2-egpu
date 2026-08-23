@@ -27,7 +27,7 @@ FIX=0; QUIET=0
 for a in "$@"; do case $a in
     --fix)   FIX=1 ;;
     --quiet) QUIET=1 ;;
-    -h|--help) awk 'NR>1 && !/^#/{exit} NR>1{sub(/^# ?/,""); print}' "$0"; exit 0 ;;
+    -h|--help) egpu_usage "$0"; exit 0 ;;
     *) echo "Unknown argument: $a" >&2; exit 2 ;;
 esac; done
 
@@ -40,7 +40,24 @@ warn() { WARN=$((WARN+1)); (( QUIET )) || printf '  \033[33mNOTE\033[0m %s\n' "$
 info() { (( QUIET )) || printf '       %s\n' "$*"; }
 
 MODPROBE_D=/etc/modprobe.d
-GPU_VENDOR=0x10de
+
+# WHY THERE IS A "MAYBE FAIL"
+#
+# Most of this file checks the NVIDIA proprietary driver, and rightly so - the
+# reset this package exists to avoid is an NVIDIA/GSP failure mode. But
+# lib/egpu-lib.sh recognises AMD and Intel cards as well, and run.sh uses
+# "1-check --quiet" as a hard gate. Written as plain fail() these checks made
+# 1-check report "no NVIDIA card on the PCI bus" for a perfectly good AMD eGPU,
+# and run.sh then refused to run at all.
+#
+# So: a hard failure when the card is NVIDIA or when no card is present (this
+# package's default assumption), and a note when we positively know it is not.
+IS_NVIDIA=1
+[[ -n ${EGPU_VENDOR:-} && ${EGPU_VENDOR,,} != 0x10de ]] && IS_NVIDIA=0
+nvfail() {
+    if (( IS_NVIDIA )); then fail "$@"
+    else warn "$* - not applicable, the card is ${EGPU_VENDOR_NAME:-not NVIDIA}"; fi
+}
 
 say "==================================================================="
 say " 1-check: prerequisites$( ((FIX)) && echo '   [--fix]')"
@@ -51,10 +68,10 @@ say "==================================================================="
 hdr "1. Tools"
 for t in lspci setpci modprobe modinfo make gcc awk; do
     if command -v "$t" >/dev/null; then pass "$t"
-    else fail "$t - zainstaluj (pciutils / build-essential / kmod)"; fi
+    else fail "$t - install it (pciutils / build-essential / kmod)"; fi
 done
 if command -v nvidia-smi >/dev/null; then pass "nvidia-smi"
-else fail "nvidia-smi - the NVIDIA driver is not installed"; fi
+else nvfail "nvidia-smi - the NVIDIA driver is not installed"; fi
 command -v boltctl >/dev/null && pass "boltctl" || warn "boltctl - useful for diagnosing the tunnel (package: bolt)"
 
 # ---------------------------------------------------------------- 2
@@ -83,7 +100,7 @@ if lic=$(modinfo -F license nvidia 2>/dev/null) && [[ -n $lic ]]; then
         info "there is then no way back to a no-GSP configuration"
     fi
 else
-    fail "the nvidia module is not built for this kernel"
+    nvfail "the nvidia module is not built for this kernel"
 fi
 
 # ---------------------------------------------------------------- 4
@@ -104,9 +121,9 @@ MOD_FIXABLE=0   # worth fixing, does not block
 if modprobe --dry-run --show-depends nvidia 2>/dev/null | grep -q '^install /bin/false'; then
     pass "nvidia autoload is blocked (install ... /bin/false is effective)"
 else
-    fail "nvidia autoload is NOT blocked"
+    nvfail "nvidia autoload is NOT blocked"
     info "the driver can bind before the cap = machine reset"
-    MOD_CRIT=1
+    (( IS_NVIDIA )) && MOD_CRIT=1
 fi
 
 # 4b. Is KMS on? The kernel takes the LAST repeated parameter.
@@ -161,7 +178,7 @@ fi
 if [[ -e /dev/nvidia-modeset ]]; then
     pass "/dev/nvidia-modeset present - Vulkan presentation can initialise"
 elif [[ -d /sys/module/nvidia_modeset ]]; then
-    fail "/dev/nvidia-modeset MISSING while nvidia_modeset is loaded"
+    nvfail "/dev/nvidia-modeset MISSING while nvidia_modeset is loaded"
     info "Vulkan presentation fails with VK_ERROR_UNKNOWN and vulkaninfo segfaults"
     info "fix: sudo /sbin/ub-device-create"
     info "or:  sudo mknod /dev/nvidia-modeset c 195 254 && sudo chmod 666 /dev/nvidia-modeset"
@@ -292,7 +309,7 @@ CMD_CRIT=0
 need_crit="pcie_ports=native pcie_aspm=off pcie_port_pm=off"
 need_warn="thunderbolt.host_reset=0 thunderbolt.clx=0"
 for p in $need_crit; do
-    grep -qw -- "$p" <<<"$CMD" && pass "$p" || { fail "$p - missing w cmdline"; CMD_CRIT=1; }
+    grep -qw -- "$p" <<<"$CMD" && pass "$p" || { fail "$p - missing from cmdline"; CMD_CRIT=1; }
 done
 for p in $need_warn; do
     grep -qw -- "$p" <<<"$CMD" && pass "$p" || warn "$p - missing (tunnel stability)"
@@ -314,26 +331,26 @@ fi
 
 # ---------------------------------------------------------------- 7
 hdr "7. Hardware"
-gpu=""
-for d in /sys/bus/pci/devices/*; do
-    [[ -r $d/vendor && -r $d/class ]] || continue
-    [[ $(<"$d/vendor") == "$GPU_VENDOR" && $(<"$d/class") == 0x03* ]] || continue
-    gpu=$(basename "$d")
-done
-if [[ -z $gpu ]]; then
-    fail "no NVIDIA card on the PCI bus"
+#
+# Discovery comes from lib/egpu-lib.sh, which is already sourced at the top of
+# this file. It used to be a fifth private copy here - and one that matched on
+# vendor 0x10de only, so it contradicted the library it sat next to.
+if [[ -z ${EGPU_GPU:-} ]]; then
+    fail "no display controller found behind a Thunderbolt/USB4 tunnel"
     info "power-cycle the enclosure, plug the cable in, check: boltctl list"
+    info "see what the kernel does show:  ./2-devices.sh --all"
 else
-    pass "card: $gpu  $(lspci -s "${gpu#0000:}" | cut -d: -f3- | sed 's/^ //')"
-    br=$(basename "$(dirname "$(readlink -f /sys/bus/pci/devices/"$gpu")")")
-    if lspci -s "${br#0000:}" 2>/dev/null | grep -qiE 'thunderbolt|usb4'; then
-        pass "bridge above the card: $br (Thunderbolt/USB4)"
+    pass "card: $EGPU_GPU  $EGPU_VENDOR_NAME"
+    info "$EGPU_DESC"
+    if lspci -s "${EGPU_BRIDGE#*:}" 2>/dev/null | grep -qiE 'thunderbolt|usb4'; then
+        pass "bridge above the card: $EGPU_BRIDGE (Thunderbolt/USB4)"
     else
-        warn "bridge above the card: $br - does not look like Thunderbolt"
+        warn "bridge above the card: $EGPU_BRIDGE - does not look like Thunderbolt"
         info "the link speed cap only makes sense behind a tunnel"
     fi
-    b1=$(lspci -vv -s "${gpu#0000:}" 2>/dev/null | grep -oP 'Region 1:.*\[size=\K[^]]+')
-    [[ -n $b1 ]] && info "BAR1 now: $b1" || info "BAR1 unassigned (normal before 0-run)"
+    b1=$(egpu_bar_size "$EGPU_GPU" 1)
+    [[ -n $b1 ]] && info "BAR1 now: $b1" \
+                 || info "BAR1 unassigned (normal before the first run.sh)"
 fi
 
 # ---------------------------------------------------------------- 8
@@ -376,13 +393,26 @@ else
 fi
 
 hdr "9. Package integrity"
-for f in run.sh 1-check.sh 2-devices.sh 3-setup.sh 4-build-module.sh 5-window.sh 6-load-driver.sh \
-         7-bar-fallback.sh 8-link-cap-gsp.sh 9-check-outputs.sh; do
+#
+# The list used to be written out by hand and had fallen behind: 10-primary-gpu,
+# 11-teardown and lib/egpu-lib.sh were all missing from it, and run.sh execs the
+# first two and sources the third. The required set is still explicit - a glob
+# cannot notice a file that is absent - but anything matching the numbered
+# pattern is additionally checked for the execute bit, so a new script cannot be
+# silently non-executable.
+for f in run.sh 1-check.sh 2-devices.sh 3-setup.sh 4-build-module.sh 5-window.sh \
+         6-load-driver.sh 7-bar-fallback.sh 8-link-cap-gsp.sh 9-check-outputs.sh \
+         10-primary-gpu.sh 11-teardown.sh; do
     [[ -x $SELFDIR/$f ]] && pass "$f" || fail "$f - missing or not executable"
 done
-for f in module/egpu_rp_window.c module/Makefile; do
+for f in lib/egpu-lib.sh module/egpu_rp_window.c module/Makefile; do
     [[ -f $SELFDIR/$f ]] && pass "$f" || fail "$f - missing"
 done
+shopt -s nullglob
+for f in "$SELFDIR"/[0-9]*-*.sh; do
+    [[ -x $f ]] || fail "$(basename "$f") - present but not executable"
+done
+shopt -u nullglob
 
 # ---------------------------------------------------------------- summary
 say ""
