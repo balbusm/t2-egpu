@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 6-load-driver.sh - keep nvidia_drm and nvidia_modeset out of the way, then
+# 05-load-driver.sh - keep nvidia_drm and nvidia_modeset out of the way, then
 # load nvidia and confirm it talks to the card.
 #
 # WHY THE BLOCKS
@@ -14,48 +14,76 @@
 # its dependencies. That is why the stack is loaded one module at a time,
 # bottom-up: nvidia -> nvidia_uvm -> nvidia_modeset -> nvidia_drm.
 #
-# If BAR1 turns out unassigned at this point, 7-bar-fallback.sh is called to
-# escalate. In a normal run that never happens, because 5-window already
+# If BAR1 turns out unassigned at this point, 06-bar-fallback.sh is called to
+# escalate. In a normal run that never happens, because 04-window already
 # assigned it.
+#
+# TWO PHASES, AND WHY THE SPLIT EXISTS
+#
+#   --configure-only   sections 1-3b: write the modprobe.d and udev files, prove
+#                      the block is effective, confirm BAR1, pin runtime PM.
+#                      Loads NOTHING.
+#   (no argument)      the above, then load nvidia and check nvidia-smi.
+#
+# run.sh asks for --configure-only. Without it the bring-up loaded nvidia here
+# and run.sh unloaded it again three steps later to apply the link cap - a full
+# load/unload cycle for nothing, and a load with no cap in place, which is the
+# configuration this whole package exists to avoid. The GSP block was the only
+# thing making it survivable.
+#
+# Run with no argument to load the driver here, which is what you want when
+# invoking this script by hand. Note that it then comes up WITHOUT the link
+# speed cap: see the warning at the end.
 
 set -uo pipefail
 
 SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the package is self-locating
 # shellcheck source=lib/egpu-lib.sh
-source "$SELFDIR/lib/egpu-lib.sh"
+source "$SELFDIR/../lib/egpu-lib.sh"
 if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run ./2-devices.sh to see what is present." >&2
+    echo "Cannot resolve eGPU topology. Run $EGPU_SCRIPTS/02-devices.sh to see what is present." >&2
     exit 1
 fi
 
 
 DEV=$EGPU_GPU
-LOGDIR=$SELFDIR/logs
-STAMP=$(date +%Y%m%d-%H%M%S)
-KLOG=$LOGDIR/kernel-$STAMP.log
-SLOG=$LOGDIR/script-$STAMP.log
-FALLBACK=$SELFDIR/7-bar-fallback.sh
+LOGDIR=$EGPU_LOGS
+STAMP=$(egpu_stamp)
+KLOG=${EGPU_KLOG:-$LOGDIR/kernel-$STAMP.log}
+FALLBACK=$EGPU_SCRIPTS/06-bar-fallback.sh
+UDEV_RULE=/etc/udev/rules.d/71-nvidia.rules
 
-[[ $EUID -eq 0 ]] || { echo "Run with sudo: sudo $0" >&2; exit 1; }
-mkdir -p "$LOGDIR"; chown "${SUDO_USER:-root}:" "$LOGDIR" 2>/dev/null || true
-exec > >(tee -a "$SLOG") 2>&1
+CONFIGURE_ONLY=0
+for a in "$@"; do case $a in
+    --configure-only) CONFIGURE_ONLY=1 ;;
+    -h|--help) egpu_usage "$0"; exit 0 ;;
+    *) echo "Unknown argument: $a" >&2; exit 1 ;;
+esac; done
 
-BG=()
-cleanup() { for p in "${BG[@]:-}"; do kill "$p" 2>/dev/null || true; done; sync; }
-trap cleanup EXIT
-mark() { printf '\n########## %s ##########\n' "$1" >> "$KLOG"; sync; echo ">>> $1"; }
+egpu_require_root
+egpu_log_open "$LOGDIR" script "$STAMP"
+trap egpu_cleanup EXIT
 
-echo "=== logi ==="
+echo "=== logs ==="
 echo "  kernel:  $KLOG"
-echo "  log: $SLOG"
+echo "  script:  $EGPU_LOG"
 
 # ---------------------------------------------------------------- 1
 echo
 echo "=== 1. Shadowing the udev rule 71-nvidia.rules ==="
-cat > /etc/udev/rules.d/71-nvidia.rules <<'EOF'
+# This OVERWRITES a file under /etc, and the content below is Ubuntu-specific
+# (ub-device-create, nvidia-persistenced). Keep one backup of whatever was there
+# before, once, so an existing hand-edited rule is recoverable. Not on every run:
+# this script runs on every bring-up and would otherwise bury the original under
+# copies of its own output.
+if [[ -f $UDEV_RULE && ! -f $UDEV_RULE.orig ]]; then
+    cp -a "$UDEV_RULE" "$UDEV_RULE.orig" \
+        && echo "  kept the previous file as $UDEV_RULE.orig"
+fi
+cat > "$UDEV_RULE" <<'EOF'
 # Shadows /lib/udev/rules.d/71-nvidia.rules for a Thunderbolt eGPU.
 #
-# USUNIETE wzgledem oryginalu:
+# REMOVED relative to the original:
 #   RUN+="/sbin/modprobe nvidia-modeset"   - hangs during initialisation
 #   RUN+="/sbin/modprobe nvidia-drm"       - "[nvidia-drm] Loading driver" = hang
 #   RUN+="/sbin/modprobe nvidia-uvm"       - not needed for nvidia-smi
@@ -69,7 +97,7 @@ SUBSYSTEM=="pci", ATTRS{vendor}=="0x10de", DRIVERS=="nvidia", TAG+="seat", TAG+=
 # nvidia-persistenced
 ACTION=="add", DEVPATH=="/bus/pci/drivers/nvidia", TAG+="systemd", ENV{SYSTEMD_WANTS}="nvidia-persistenced.service"
 
-# Wezly /dev/nvidia*
+# /dev/nvidia* nodes
 ACTION=="add", DEVPATH=="/bus/pci/drivers/nvidia", RUN+="/sbin/ub-device-create"
 ACTION=="add", DEVPATH=="/module/nvidia_uvm", SUBSYSTEM=="module", RUN+="/sbin/ub-device-create"
 
@@ -77,7 +105,7 @@ ACTION=="add", DEVPATH=="/module/nvidia_uvm", SUBSYSTEM=="module", RUN+="/sbin/u
 ACTION=="bind", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{class}=="0x03[0-9]*", TEST=="power/control", ATTR{power/control}="on"
 ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{class}=="0x040300", TEST=="power/control", ATTR{power/control}="on"
 EOF
-echo "  wrote /etc/udev/rules.d/71-nvidia.rules"
+echo "  wrote $UDEV_RULE"
 udevadm control --reload && echo "  udev reloaded"
 
 # ---------------------------------------------------------------- 2
@@ -105,8 +133,8 @@ install nvidia_modeset /bin/false
 #      "modprobe nvidia_drm" - the display only worked because callers repeat
 #      modeset=1 on the command line. fbdev=0 was never repeated, so THAT one
 #      simply took effect, unnoticed.
-#   4. It made 1-check.sh report a permanent NOTE, and it undid
-#      "1-check.sh --fix" on every run of this script.
+#   4. It made 01-check.sh report a permanent NOTE, and it undid
+#      "01-check.sh --fix" on every run of this script.
 
 # No D3cold.
 options nvidia NVreg_DynamicPowerManagement=0
@@ -132,7 +160,7 @@ else
     echo "    MISSING - DKMS did not build nvidia for this kernel." >&2
     echo "    Fix: rebuild the driver for the running kernel, e.g." >&2
     echo "      sudo dkms autoinstall -k \"$(uname -r)\"" >&2
-    echo "    Diagnoza: sudo ./1-check.sh" >&2
+    echo "    Diagnose: sudo $EGPU_SCRIPTS/01-check.sh" >&2
     exit 1
 fi
 echo
@@ -147,24 +175,46 @@ echo "  OK: DynamicPowerManagement=0"
 # ---------------------------------------------------------------- 3
 echo
 echo "=== 3. BAR1 ==="
-bar1=$(awk 'NR==2 { print $1 }' /sys/bus/pci/devices/$DEV/resource 2>/dev/null || echo x)
-if [[ $bar1 == 0x0000000000000000 || $bar1 == x ]]; then
-    echo "  BAR1 unassigned - running 7-bar-fallback.sh"
+if ! egpu_bar_assigned "$DEV" 1; then
+    echo "  BAR1 unassigned - running 06-bar-fallback.sh"
     [[ -x $FALLBACK ]] || { echo "  ERROR: missing $FALLBACK" >&2; exit 1; }
-    "$FALLBACK" || { echo "  7-bar-fallback could not do it - aborting" >&2; exit 1; }
-    bar1=$(awk 'NR==2 { print $1 }' /sys/bus/pci/devices/$DEV/resource 2>/dev/null || echo x)
+    "$FALLBACK" || { echo "  06-bar-fallback could not do it - aborting" >&2; exit 1; }
 fi
-[[ $bar1 != 0x0000000000000000 && $bar1 != x ]] || {
-    echo "  ERROR: BAR1 still unassigned" >&2; exit 1; }
-echo "  BAR1 = $bar1  OK"
+egpu_bar_assigned "$DEV" 1 || { echo "  ERROR: BAR1 still unassigned" >&2; exit 1; }
+printf '  BAR1 = %s  size %s  OK\n' "$(egpu_bar_base "$DEV" 1)" "$(egpu_bar_size "$DEV" 1)"
 lspci -vv -s "$DEV" 2>/dev/null | grep -E "Region [013]" | sed 's/^/  /'
+
+# ---------------------------------------------------------------- 3b
+echo
+echo "=== 3b. Runtime PM of the card ==="
+# Pinned to "on" BEFORE the driver can bind, not after. D3cold over Thunderbolt
+# is a known way to get "fallen off the bus", and this used to sit in the load
+# section - so the --configure-only path, which is the one run.sh takes, would
+# have skipped it. The udev rule and NVreg_DynamicPowerManagement=0 say the same
+# thing; this is the belt to their braces.
+printf "  power/control = %s\n" "$(cat /sys/bus/pci/devices/$DEV/power/control 2>/dev/null)"
+echo on > /sys/bus/pci/devices/$DEV/power/control 2>/dev/null \
+    && echo "  forced to 'on'"
+
+if (( CONFIGURE_ONLY )); then
+    echo
+    echo "=== --configure-only: stopping before the driver load ==="
+    echo "  /etc is configured, the block is proven effective, BAR1 is assigned,"
+    echo "  runtime PM is pinned. Nothing is loaded."
+    echo "  The caller loads the driver itself, AFTER the link speed cap - which"
+    echo "  is the whole point of not loading it here."
+    echo
+    echo "  To revert what this script changed:"
+    echo "    sudo rm $UDEV_RULE /etc/modprobe.d/zz-egpu-nvidia.conf"
+    echo "    sudo udevadm control --reload"
+    exit 0
+fi
 
 # ---------------------------------------------------------------- 4
 echo
 echo "=== 4. Capturing the kernel log ==="
-stdbuf -oL dmesg -w >> "$KLOG" &  BG+=($!)
-( while :; do sync; sleep 0.2; done ) & BG+=($!)
-sleep 1; echo "  aktywne"
+egpu_klog_start "$KLOG"
+echo "  active"
 
 # ---------------------------------------------------------------- 5
 echo
@@ -190,11 +240,6 @@ if [[ -d /sys/module/nvidia_drm || -d /sys/module/nvidia_modeset ]]; then
 else
     echo "  OK: nvidia_drm and nvidia_modeset are NOT loaded"
 fi
-
-echo
-echo "  runtime PM of the card:"
-printf "    power/control = %s\n" "$(cat /sys/bus/pci/devices/$DEV/power/control 2>/dev/null)"
-echo on > /sys/bus/pci/devices/$DEV/power/control 2>/dev/null && echo "    forced to 'on'"
 
 echo
 echo "  driver bound to the device:"
@@ -233,14 +278,14 @@ fails with VK_ERROR_UNKNOWN and vulkaninfo segfaults.
 
 Loading nvidia_drm by hand WITHOUT "modeset=1" gives no display, because a
 conflicting "options nvidia_drm modeset=0" may exist in modprobe.d and the
-kernel takes the last repeated parameter. Run ./1-check.sh to see the effective
+kernel takes the last repeated parameter. Run ./scripts/01-check.sh to see the effective
 value.
 EOF
 else
-    rc=$?; mark "PO nvidia-smi ERROR rc=$rc"
+    rc=$?; mark "AFTER nvidia-smi ERROR rc=$rc"
     echo "  nvidia-smi rc=$rc" >&2
     echo
-    echo "  Komunikaty NVRM:"
+    echo "  NVRM messages:"
     dmesg | grep -iE "nvrm|nvidia" | tail -30 | sed 's/^/    /'
 fi
 

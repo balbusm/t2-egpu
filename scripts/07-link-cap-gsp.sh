@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 8-link-cap-gsp.sh - the cautious variant of the link cap plus GSP.
+# 07-link-cap-gsp.sh - the cautious variant of the link cap plus GSP.
 #
 # run.sh does the same thing inline and is what you normally want. Use this
 # one when a run might hang the machine: it detaches itself as a systemd unit,
@@ -24,7 +24,7 @@
 # WHAT IT DOES NOT TOUCH
 #
 # The root-port window and the BAR assignment. Link speed and GSP are not
-# resources, so there is no need to repeat 3-setup.
+# resources, so there is no need to repeat the window setup.
 #
 # RISK
 #
@@ -35,19 +35,19 @@
 #
 # USAGE
 #
-#   sudo ./8-link-cap-gsp.sh              # Gen3 + bit 5, GSP on
-#   sudo CAP_SPEED=2 ./8-link-cap-gsp.sh  # Gen2 ceiling
-#   sudo ./8-link-cap-gsp.sh --retrain    # force a retrain as well
-#   sudo ./8-link-cap-gsp.sh --off        # revert: GSP off, cap removed
-#   sudo ./8-link-cap-gsp.sh --arm-panic  # panic on kernel stall (diagnostics)
+#   sudo ./scripts/07-link-cap-gsp.sh              # Gen3 + bit 5, GSP on
+#   sudo CAP_SPEED=2 ./scripts/07-link-cap-gsp.sh  # Gen2 ceiling
+#   sudo ./scripts/07-link-cap-gsp.sh --retrain    # force a retrain as well
+#   sudo ./scripts/07-link-cap-gsp.sh --off        # revert: GSP off, cap removed
+#   sudo ./scripts/07-link-cap-gsp.sh --arm-panic  # panic on kernel stall (diagnostics)
 
 set -uo pipefail
 
 SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the package is self-locating
 # shellcheck source=lib/egpu-lib.sh
-source "$SELFDIR/lib/egpu-lib.sh"
+source "$SELFDIR/../lib/egpu-lib.sh"
 if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run ./2-devices.sh to see what is present." >&2
+    echo "Cannot resolve eGPU topology. Run $EGPU_SCRIPTS/02-devices.sh to see what is present." >&2
     exit 1
 fi
 # Adopt what discovery found. Skipping this leaves GPU empty, and an empty
@@ -56,15 +56,14 @@ fi
 GPU=$EGPU_GPU
 BRIDGE=${BRIDGE:-$EGPU_BRIDGE}
 
-
-GPU=${GPU:-}
-BRIDGE=${BRIDGE:-}                 # empty = discover the card's parent
 GSPOFF=/etc/modprobe.d/zzzz-egpu-gsp-off.conf
 SYSCTL=/etc/sysctl.d/99-egpu-panic.conf
-LOGDIR=$SELFDIR/logs
-STAMP=$(date +%Y%m%d-%H%M%S)
-KLOG=$LOGDIR/7-link-cap-kernel-$STAMP.log
-SLOG=$LOGDIR/7-link-cap-$STAMP.log
+LOGDIR=$EGPU_LOGS
+STAMP=$(egpu_stamp)
+# Named after THIS script, so a stray log cannot be mistaken for another
+# step's output. Its own kernel log, separate from the bring-up's: this script
+# is a standalone variant, not part of the 01-06 chain.
+KLOG=$LOGDIR/07-link-cap-kernel-$STAMP.log
 
 CAP_SPEED=${CAP_SPEED:-3}          # 1|2|3|4 - Target Link Speed
 WANT_OFF=0
@@ -75,15 +74,12 @@ for a in "$@"; do
         --off)     WANT_OFF=1 ;;
         --retrain) WANT_RETRAIN=1 ;;
         --arm-panic) WANT_PANIC=1 ;;
+        -h|--help) egpu_usage "$0"; exit 0 ;;
         *) echo "Unknown argument: $a" >&2; exit 1 ;;
     esac
 done
 
-LNKCTL2=CAP_EXP+30.w               # Link Control 2
-LNKCTL=CAP_EXP+10.w                # Link Control
-LNKSTA=CAP_EXP+12.w                # Link Status
-
-[[ $EUID -eq 0 ]] || { echo "Run with sudo: sudo $0 [--off] [--retrain]" >&2; exit 1; }
+egpu_require_root "[--off] [--retrain]"
 [[ $CAP_SPEED =~ ^[1-4]$ ]] || { echo "ERROR: CAP_SPEED must read 1..4" >&2; exit 1; }
 
 # --- preflight ---
@@ -91,7 +87,8 @@ LNKSTA=CAP_EXP+12.w                # Link Status
 # HAVE_HW=0 means the card is not on the bus. When applying the cap that is
 # fatal. With --off it is NOT: after a failed attempt the machine resets,
 # the card usually drops out of the tunnel, and what matters then is restoring
-# the GSP block - otherwise 3-setup.sh walks straight back into it. Reverting
+# the GSP block - otherwise the next bring-up walks straight back into it.
+# Reverting
 # must ALWAYS work.
 HAVE_HW=1
 if [[ ! -d /sys/bus/pci/devices/$GPU ]]; then
@@ -109,7 +106,6 @@ fi
 # never hardcoded: bus numbers behind a Thunderbolt tunnel shift between
 # machines, between ports and between hot-plugs. BRIDGE= overrides.
 if (( HAVE_HW )); then
-    BRIDGE=${BRIDGE:-$EGPU_BRIDGE}
     echo "Bridge above the card: $BRIDGE"
     lspci -s "${BRIDGE#*:}" 2>/dev/null | sed 's/^/  /'
     if ! lspci -s "${BRIDGE#*:}" 2>/dev/null | grep -qiE 'thunderbolt|usb4'; then
@@ -129,52 +125,30 @@ fi
 # to hang the machine with, and killing the session while reverting is hostile.
 MYTTY=$(tty 2>/dev/null || echo '?')
 if (( ! WANT_OFF )) && [[ $MYTTY != /dev/tty[0-9]* && ${EGPU_DETACHED:-0} != 1 ]]; then
-    command -v systemd-run >/dev/null || { echo "ERROR: $MYTTY i missing systemd-run" >&2; exit 1; }
+    command -v systemd-run >/dev/null || { echo "ERROR: on $MYTTY and systemd-run is missing" >&2; exit 1; }
     echo "You are on $MYTTY. Detaching as a systemd unit (the graphical session will go)."
     echo "When it finishes: Ctrl+Alt+F1, then"
-    echo "  sudo cat \$(ls -t $LOGDIR/7-link-cap-*.log | head -1)"
+    echo "  sudo cat \$(ls -t $LOGDIR/07-link-cap-*.log | head -1)"
     echo "Starting in 5 s (Ctrl+C aborts)..."
     sleep 5
-    exec systemd-run --unit=egpu-8-link-cap-gsp --collect \
+    exec systemd-run --unit=egpu-07-link-cap-gsp --collect \
         -p IgnoreOnIsolate=yes -p Type=oneshot -p TimeoutStartSec=900 \
         -E EGPU_DETACHED=1 -E CAP_SPEED="$CAP_SPEED" \
         -E GPU="$GPU" -E BRIDGE="$BRIDGE" "$0" "$@"
 fi
 
-mkdir -p "$LOGDIR"; chown "${SUDO_USER:-root}:" "$LOGDIR" 2>/dev/null || true
-exec > >(tee -a "$SLOG") 2>&1
-TEE_PID=$!
-BG=()
-cleanup() { for p in "${BG[@]:-}"; do kill "$p" 2>/dev/null || true; done; sync; exec 1>&- 2>&-; wait "$TEE_PID" 2>/dev/null; }
-trap cleanup EXIT
-mark() { printf '\n########## %s ##########\n' "$1" >> "$KLOG"; sync; echo ">>> $1"; }
-
-# Speed name from LnkSta[3:0], for a readable report.
-speed_name() {
-    case $(( $1 & 0xf )) in
-        1) echo "Gen1 2.5GT/s" ;; 2) echo "Gen2 5GT/s"  ;; 3) echo "Gen3 8GT/s" ;;
-        4) echo "Gen4 16GT/s" ;; 5) echo "Gen5 32GT/s" ;; *) echo "?($1)" ;;
-    esac
-}
+egpu_log_open "$LOGDIR" 07-link-cap "$STAMP"
+trap egpu_cleanup EXIT
+SLOG=$EGPU_LOG
 
 show_link() {
-    local label=$1 dev
-    echo "  --- $label ---"
+    echo "  --- $1 ---"
     if (( ! HAVE_HW )); then echo "    (card not present - nothing to read)"; return 0; fi
-    for dev in "$BRIDGE" "$GPU"; do
-        local c2 st
-        c2=$(setpci -s "$dev" "$LNKCTL2" 2>/dev/null) || { echo "    $dev: read failed"; continue; }
-        st=$(setpci -s "$dev" "$LNKSTA" 2>/dev/null) || st=0000
-        printf "    %s  LnkCtl2=0x%s (Target=%s, bit5 HW-Auto-Speed-Disable=%s)  LnkSta=%s\n" \
-            "$dev" "$c2" \
-            "$(speed_name $((0x$c2)))" \
-            "$([[ $(( 0x$c2 & 0x20 )) -ne 0 ]] && echo SET || echo unset)" \
-            "$(speed_name $((0x$st)))"
-    done
+    egpu_show_link "$BRIDGE" "$GPU"
 }
 
 echo "==================================================================="
-echo " 8-link-cap-gsp: $([[ $WANT_OFF == 1 ]] && echo 'REVERT - cap removed, GSP disabled' \
+echo " 07-link-cap-gsp: $([[ $WANT_OFF == 1 ]] && echo 'REVERT - cap removed, GSP disabled' \
                                      || echo "cap Gen$CAP_SPEED + bit5, GSP ENABLED")"
 echo " log: $SLOG   (kernel: $KLOG)"
 echo "==================================================================="
@@ -183,14 +157,11 @@ echo "==================================================================="
 #
 # Must be reliable and work with no card on the bus, because this is what
 # you run after a failed attempt, often right after the machine reset.
-# Loads nothing - restores the configuration and exits. Then: reboot + 3-setup.
+# Loads nothing - restores the configuration and exits. Then: reboot + run.sh.
 if (( WANT_OFF )); then
     echo
-    echo "=== 1. Unloading the nvidia stack (if wisi) ==="
-    for m in nvidia_drm nvidia_modeset nvidia_uvm nvidia; do
-        [[ -d /sys/module/$m ]] && { modprobe -r "$m" 2>/dev/null && echo "  $m unloaded" \
-            || echo "  $m NOT unloaded (a reboot fixes this)"; }
-    done
+    echo "=== 1. Unloading the nvidia stack (if any) ==="
+    egpu_unload_stack || echo "  a reboot fixes this"
 
     echo
     echo "=== 2. Restoring the GSP block ==="
@@ -205,10 +176,7 @@ if (( WANT_OFF )); then
     echo "=== 3. Removing the link cap ==="
     if (( HAVE_HW )); then
         show_link "link BEFORE removing the cap"
-        for dev in "$BRIDGE" "$GPU"; do
-            setpci -s "$dev" "$LNKCTL2"=0004:000f && echo "  $dev Target -> Gen4"
-            setpci -s "$dev" "$LNKCTL2"=0000:0020 && echo "  $dev bit5 cleared"
-        done
+        egpu_cap_clear "$BRIDGE" "$GPU" && echo "  Target -> Gen4, bit5 cleared"
         show_link "link AFTER removing the cap"
         echo "  (only a reboot returns the window fully to its firmware state)"
     else
@@ -252,10 +220,9 @@ fi
 
 echo
 echo "=== 2. Entry state ==="
-printf "  BAR1: %s\n" "$(lspci -vv -s "${GPU#0000:}" 2>/dev/null | grep 'Region 1' | sed 's/^\s*//')"
+printf "  BAR1: %s\n" "$(egpu_bar_size "$GPU" 1)"
 printf "  GSP:  %s\n" "$(grep -oP 'EnableGpuFirmware: \K\S+' /proc/driver/nvidia/params 2>/dev/null || echo 'none (module not loaded)')"
-printf "  modules: "; for m in nvidia nvidia_uvm nvidia_modeset nvidia_drm; do
-    [[ -d /sys/module/$m ]] && printf "%s " "$m"; done; echo
+printf "  modules: %s\n" "$(egpu_loaded_modules)"
 show_link "link BEFORE the change"
 
 echo
@@ -269,41 +236,23 @@ systemctl stop nvidia-persistenced 2>/dev/null && echo "  stopped nvidia-persist
 
 echo
 echo "=== 4. Capturing the kernel log ==="
-stdbuf -oL dmesg -w >> "$KLOG" &  BG+=($!)
-( while :; do sync; sleep 0.2; done ) & BG+=($!)
-sleep 1; echo "  aktywne"
+egpu_klog_start "$KLOG"
+echo "  active"
 
 echo
 echo "=== 5. Unloading the nvidia stack (the cap MUST precede the bind) ==="
 mark "BEFORE unloading"
-for m in nvidia_drm nvidia_modeset nvidia_uvm nvidia; do
-    if [[ -d /sys/module/$m ]]; then
-        if modprobe -r "$m" 2>/dev/null; then echo "  $m unloaded"
-        else echo "  $m NOT unloaded - aborting, a reboot will be needed" >&2; exit 1; fi
-    fi
-done
+egpu_unload_stack || { echo "  aborting, a reboot will be needed" >&2; exit 1; }
 mark "AFTER unloading"
 
 echo
 echo "=== 6. Applying the cap BEFORE loading nvidia ==="
-TGT=$(printf '%04x' "$CAP_SPEED")
-for dev in "$BRIDGE" "$GPU"; do
-    mark "cap $dev"
-    if setpci -s "$dev" "$LNKCTL2"="$TGT":000f; then
-        echo "  $dev Target Link Speed -> Gen$CAP_SPEED"
-    else
-        echo "  ERROR: writing Target on $dev failed" >&2; exit 2
-    fi
-    if setpci -s "$dev" "$LNKCTL2"=0020:0020; then
-        echo "  $dev bit5 Hardware Autonomous Speed Disable -> SET"
-    else
-        echo "  ERROR: writing bit 5 on $dev failed" >&2; exit 2
-    fi
-done
+mark "cap $BRIDGE and $GPU"
+egpu_cap_apply "$CAP_SPEED" "$BRIDGE" "$GPU" || exit 2
 if (( WANT_RETRAIN )); then
     mark "BEFORE retrain $BRIDGE"
     echo "  forcing a retrain on $BRIDGE (the tunnel may drop here)"
-    setpci -s "$BRIDGE" "$LNKCTL"=0020:0020 && echo "  retrain issued" || echo "  retrain FAILED" >&2
+    setpci -s "$BRIDGE" "$EGPU_LNKCTL"=0020:0020 && echo "  retrain issued" || echo "  retrain FAILED" >&2
     sleep 2
     mark "AFTER retrain"
     if [[ ! -d /sys/bus/pci/devices/$GPU ]]; then
@@ -312,7 +261,7 @@ if (( WANT_RETRAIN )); then
         exit 3
     fi
 else
-    echo "  retrain skipped (dodaj --retrain, if GSP still dies)"
+    echo "  retrain skipped (add --retrain if GSP still dies)"
 fi
 show_link "link AFTER the change"
 
@@ -340,7 +289,7 @@ dmesg | tail -40 | grep -iE 'gsp|lockdown|firmware|xid' | tail -10 | sed 's/^.*\
 echo
 echo "=== 9. nvidia-smi - THIS IS WHERE FIVE EARLIER ATTEMPTS RESET THE MACHINE ==="
 mark "BEFORE nvidia-smi"
-if nvidia-smi; then mark "AFTER nvidia-smi OK"; else rc=$?; mark "PO nvidia-smi ERROR rc=$rc"; fi
+if nvidia-smi; then mark "AFTER nvidia-smi OK"; else rc=$?; mark "AFTER nvidia-smi ERROR rc=$rc"; fi
 show_link "link after GPU initialisation"
 
 echo
@@ -360,25 +309,13 @@ sleep 4
 
 echo
 echo "=== 11. CONNECTORS - does the card read EDID (the real test) ==="
-nvcard=""
-for c in /sys/class/drm/card[0-9]*; do
-    [[ -e $c/device/driver ]] || continue
-    [[ $(basename "$(readlink -f "$c/device/driver")") == nvidia ]] && nvcard=$(basename "$c")
-done
-if [[ -z $nvcard ]]; then
+if ! egpu_nv_card; then
     echo "  no DRM card from nvidia"
 else
-    printf "  %-16s %-14s %-8s %s\n" CONNECTOR STATUS EDID MODE
-    for conn in /sys/class/drm/$nvcard-*; do
-        [[ -e $conn/status ]] || continue
-        printf "  %-16s %-14s %-8s %s\n" "${conn##*/$nvcard-}" \
-            "$(cat "$conn/status")" \
-            "$(wc -c < "$conn/edid" 2>/dev/null || echo 0)B" \
-            "$(head -1 "$conn/modes" 2>/dev/null || echo '-')"
-    done
+    egpu_print_connectors "$EGPU_CARD" || true
     echo
     echo "  AUX/EDID errors from nvidia-modeset (empty = the card reads EDID):"
-    dmesg | grep -i 'nvidia-modeset' | grep -iE 'edid|aux' | tail -6 | sed 's/^.*\] /    /' || echo "    (missing)"
+    dmesg | grep -i 'nvidia-modeset' | grep -iE 'edid|aux' | tail -6 | sed 's/^.*\] /    /' || echo "    (none)"
 fi
 
 echo
@@ -396,7 +333,7 @@ cat <<EOF
       sudo CAP_SPEED=2 $0 --retrain
       then CAP_SPEED=1 (Gen1 - large bandwidth loss, but it tests the mechanism)
   Back to the known-good configuration:
-      sudo $0 --off  &&  sudo reboot  &&  sudo ./3-setup.sh
+      sudo $0 --off  &&  sudo reboot  &&  sudo ./run.sh
   If it hangs: the kernel log is in $KLOG (synced every 0.2 s). pstore has NO backend
                (measured: ramoops has no reservation), so do not expect a post-reset dump.
 EOF

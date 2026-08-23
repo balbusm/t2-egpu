@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 10-primary-gpu.sh - make the eGPU the compositor's PRIMARY GPU, so the monitor
+# 09-primary-gpu.sh - make the eGPU the compositor's PRIMARY GPU, so the monitor
 # on the card is driven without crossing the Thunderbolt tunnel at all.
 #
 # READ THIS BEFORE RUNNING IT. This is the one script in the package that can
@@ -109,10 +109,10 @@
 #
 # USAGE
 #
-#   sudo ./10-primary-gpu.sh --on             # this boot only (rule in /run)
-#   sudo ./10-primary-gpu.sh --on --persist   # survives reboot (rule in /etc)
-#   sudo ./10-primary-gpu.sh --off            # remove from BOTH locations
-#   ./10-primary-gpu.sh --status              # what is installed and whether it
+#   sudo ./scripts/09-primary-gpu.sh --on             # this boot only (rule in /run)
+#   sudo ./scripts/09-primary-gpu.sh --on --persist   # survives reboot (rule in /etc)
+#   sudo ./scripts/09-primary-gpu.sh --off            # remove from BOTH locations
+#   ./scripts/09-primary-gpu.sh --status              # what is installed and whether it
 #                                            # survives a reboot
 #
 # Neither --on nor --off takes effect until the session restarts. Nothing
@@ -133,17 +133,12 @@
 set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/egpu-lib.sh
+source "$DIR/../lib/egpu-lib.sh"          # reporters, egpu_nv_card, egpu_usage
+
 RULE_NAME=62-egpu-primary-gpu.rules
 RULE_RUN=/run/udev/rules.d/$RULE_NAME     # volatile - default
 RULE_ETC=/etc/udev/rules.d/$RULE_NAME     # persistent - --persist
-
-ok()   { printf '  \033[32m+\033[0m %s\n' "$*"; }
-warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
-bad()  { printf '  \033[31mx\033[0m %s\n' "$*"; }
-hdr()  { printf '\n\033[1m=== %s ===\033[0m\n' "$*"; }
-# NOTE: "info" must be defined here - it is also /usr/bin/info, so a missing
-# definition does not fail loudly, it silently runs the GNU docs reader.
-info() { printf '    %s\n' "$*"; }
 
 MODE=status; PERSIST=0
 for a in "$@"; do case $a in
@@ -151,27 +146,10 @@ for a in "$@"; do case $a in
     --off) MODE=off ;;
     --persist) PERSIST=1 ;;
     --status) MODE=status ;;
-    -h|--help) awk 'NR>1 && !/^#/{exit} NR>1{sub(/^# ?/,""); print}' "$0"; exit 0 ;;
+    -h|--help) egpu_usage "$0"; exit 0 ;;
     *) echo "Unknown argument: $a" >&2; exit 1 ;;
 esac; done
 
-# Which DRM card does the nvidia driver own, and what are its PCI IDs. Both are
-# discovered, never hardcoded - same reason as everywhere else in this package.
-find_egpu() {
-    local c drv dev
-    for c in /sys/class/drm/card[0-9]*; do
-        [[ -e $c/device/driver ]] || continue
-        drv=$(basename "$(readlink -f "$c/device/driver")")
-        [[ $drv == nvidia ]] || continue
-        dev=$c/device
-        EGPU_CARD=$(basename "$c")
-        EGPU_VENDOR=$(cat "$dev/vendor" 2>/dev/null)
-        EGPU_DEVICE=$(cat "$dev/device" 2>/dev/null)
-        EGPU_BDF=$(basename "$(readlink -f "$dev")")
-        return 0
-    done
-    return 1
-}
 
 # ---------- STATUS ----------
 if [[ $MODE == status ]]; then
@@ -210,7 +188,7 @@ if [[ $MODE == status ]]; then
     exit 0
 fi
 
-[[ $EUID -eq 0 ]] || { echo "Run with sudo: sudo $0 ${*:-}" >&2; exit 1; }
+egpu_require_root "${*:-}"
 
 # ---------- OFF ----------
 if [[ $MODE == off ]]; then
@@ -257,7 +235,7 @@ if [[ $MODE == off ]]; then
     echo
     info "The running session is unchanged - mutter reads udev tags only when"
     info "it starts. The Radeon becomes primary again at the next restart:"
-    info "    sudo $DIR/run.sh --restart-ui"
+    info "    sudo $EGPU_ROOT/run.sh --restart-ui"
     info ""
     info "NOT 'systemctl isolate graphical.target': when the system is already"
     info "IN graphical.target that is a no-op and nothing restarts. Use the"
@@ -268,14 +246,14 @@ fi
 
 # ---------- ON ----------
 hdr "Finding the eGPU"
-if ! find_egpu; then
+if ! egpu_nv_card; then
     bad "no DRM card owned by the nvidia driver"
     info "The card has to be up before its PCI IDs can be read:"
-    info "    sudo $DIR/run.sh --restart-ui"
+    info "    sudo $EGPU_ROOT/run.sh --restart-ui"
     exit 1
 fi
-ok "$EGPU_CARD  $EGPU_BDF  vendor=$EGPU_VENDOR device=$EGPU_DEVICE"
-[[ -n $EGPU_VENDOR && -n $EGPU_DEVICE ]] || { bad "could not read PCI IDs"; exit 1; }
+ok "$EGPU_CARD  $EGPU_CARD_BDF  vendor=$EGPU_CARD_VENDOR device=$EGPU_CARD_DEVICE"
+[[ -n $EGPU_CARD_VENDOR && -n $EGPU_CARD_DEVICE ]] || { bad "could not read PCI IDs"; exit 1; }
 
 # Sanity check worth having: if the card has no connected output, making it
 # primary buys nothing and costs the internal panel a copy path.
@@ -309,14 +287,14 @@ fi
 cat > "$RULE" <<EOF
 # Make the external GPU mutter's primary device, so the monitor attached to it
 # is composited and scanned out on the same card - no Thunderbolt round trip.
-# Written by $DIR/10-primary-gpu.sh
+# Written by $EGPU_SCRIPTS/09-primary-gpu.sh
 #
 # Matching is on PCI vendor:device, not /dev/dri/cardN: card numbering moves on
 # this machine (card0 is a USB display, the eGPU is hot-plugged).
 #
 # This matches nothing at boot, because the card is not present until run.sh
 # has set up the tunnel. A normal boot is therefore unaffected.
-SUBSYSTEM=="drm", ENV{DEVTYPE}=="drm_minor", ENV{DEVNAME}=="/dev/dri/card[0-9]", SUBSYSTEMS=="pci", ATTRS{vendor}=="$EGPU_VENDOR", ATTRS{device}=="$EGPU_DEVICE", TAG+="mutter-device-preferred-primary"
+SUBSYSTEM=="drm", ENV{DEVTYPE}=="drm_minor", ENV{DEVNAME}=="/dev/dri/card[0-9]", SUBSYSTEMS=="pci", ATTRS{vendor}=="$EGPU_CARD_VENDOR", ATTRS{device}=="$EGPU_CARD_DEVICE", TAG+="mutter-device-preferred-primary"
 EOF
 ok "wrote $RULE"
 udevadm control --reload 2>/dev/null && ok "udev rules reloaded"
@@ -334,7 +312,7 @@ fi
 hdr "NEXT STEP - AND THE RISK"
 echo "  Nothing has changed in the running desktop. It takes effect on restart:"
 echo
-echo "      sudo $DIR/run.sh --restart-ui"
+echo "      sudo $EGPU_ROOT/run.sh --restart-ui"
 echo
 echo "  If the desktop does NOT come back:"
 echo "      1. Ctrl+Alt+F3, log in"

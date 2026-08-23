@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 7-bar-fallback.sh - fallback when BAR1 came out unassigned. Called by
-# 6-load-driver.sh, not run directly in a normal bring-up.
+# 06-bar-fallback.sh - fallback when BAR1 came out unassigned. Called by
+# 05-load-driver.sh, not run directly in a normal bring-up.
 #
 # WHAT IT DOES
 #
@@ -19,90 +19,63 @@ set -uo pipefail
 
 SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the package is self-locating
 # shellcheck source=lib/egpu-lib.sh
-source "$SELFDIR/lib/egpu-lib.sh"
+source "$SELFDIR/../lib/egpu-lib.sh"
 if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run ./2-devices.sh to see what is present." >&2
+    echo "Cannot resolve eGPU topology. Run $EGPU_SCRIPTS/02-devices.sh to see what is present." >&2
     exit 1
 fi
 
 
 DEV=$EGPU_GPU
-CAP=0xbb0
 TARGET_BAR=1
+# Shrink to 64 MB, half of what 04-window asks for: the point of this script is
+# to make the request small enough to fit whatever the kernel can still lay out.
 TARGET_SIZE=6                 # 2^6 MB = 64 MB
-EXP_CAP_ID=0x0015
 
-LOGDIR=$SELFDIR/logs
-STAMP=$(date +%Y%m%d-%H%M%S)
-KLOG=$LOGDIR/kernel-$STAMP.log
-SLOG=$LOGDIR/script-$STAMP.log
+LOGDIR=$EGPU_LOGS
+STAMP=$(egpu_stamp)
+# 05-load-driver calls this script while its own capture is running and exports
+# EGPU_KLOG; adopting it avoids a second "dmesg -w" on the same file.
+KLOG=${EGPU_KLOG:-$LOGDIR/kernel-$STAMP.log}
 
-[[ $EUID -eq 0 ]] || { echo "Run with sudo: sudo $0" >&2; exit 1; }
+egpu_require_root
 [[ -d /sys/bus/pci/devices/$DEV ]] || {
     echo "ERROR: $DEV does not exist - plug the enclosure in." >&2; exit 1; }
 
-mkdir -p "$LOGDIR"; chown "${SUDO_USER:-root}:" "$LOGDIR" 2>/dev/null || true
-exec > >(tee -a "$SLOG") 2>&1
+egpu_log_open "$LOGDIR" script "$STAMP"
+trap egpu_cleanup EXIT
 
-BG=()
-cleanup() { for p in "${BG[@]:-}"; do kill "$p" 2>/dev/null || true; done; sync; }
-trap cleanup EXIT
-
-mark() { printf '\n########## %s ##########\n' "$1" >> "$KLOG"; sync; echo ">>> $1"; }
-
-echo "=== logi ==="
+echo "=== logs ==="
 echo "  kernel:  $KLOG"
-echo "  log: $SLOG"
+echo "  script:  $EGPU_LOG"
 
-stdbuf -oL dmesg -w >> "$KLOG" &  BG+=($!)
-( while :; do sync; sleep 0.2; done ) & BG+=($!)
-sleep 1
+egpu_klog_start "$KLOG"
 
-rd() { setpci -s "$DEV" "$(printf '%x' $1).L" 2>/dev/null; }
-
-rebar_entry_off() {
-    local hdr cap_id ctrl0 n i off v
-    hdr=$((16#$(rd $CAP))); cap_id=$((hdr & 0xffff))
-    (( cap_id == EXP_CAP_ID )) || return 1
-    ctrl0=$((16#$(rd $((CAP + 0x08))))); n=$(( (ctrl0 >> 5) & 0x7 ))
-    for ((i = 0; i < n; i++)); do
-        off=$((CAP + 0x08 + 8 * i)); v=$((16#$(rd $off)))
-        (( (v & 0x7) == TARGET_BAR )) && { echo $off; return 0; }
-    done
-    return 1
-}
-
-# Set BAR1 to 64 MB if it is not already. Returns 0 when, on exit,
-# the card reports 64 MB. A bridge reset can restore 256 MB, which is why
-# called before EVERY attempt.
+# Set BAR1 to the target size if it is not already there. A bridge reset can
+# restore the previous size, which is why this runs before EVERY attempt rather
+# than once. The capability offset is discovered, not the old hardcoded 0xbb0.
 apply_rebar() {
-    local off cur new back got
-    off=$(rebar_entry_off) || { echo "  ERROR: no ReBAR capability entry for BAR1"; return 1; }
-    cur=$(( ($((16#$(rd $off))) >> 8) & 0x3f ))
+    local off cur
+    off=$(egpu_rebar_entry "$DEV" "$TARGET_BAR") \
+        || { echo "  ERROR: no ReBAR capability entry for BAR$TARGET_BAR"; return 1; }
+    cur=$(egpu_rebar_get "$DEV" "$off") || return 1
     if (( cur == TARGET_SIZE )); then
-        echo "  ReBAR BAR1 already = 64 MB"
+        printf '  ReBAR BAR1 already = %d MB\n' $((2 ** TARGET_SIZE))
         return 0
     fi
-    echo "  ReBAR BAR1 = $((2 ** cur)) MB -> ustawiam 64 MB"
-    new=$(( ($((16#$(rd $off))) & ~0x00003f00) | (TARGET_SIZE << 8) ))
-    setpci -s "$DEV" "$(printf '%x' $off).L=$(printf '%08x' $new)" || return 1
-    back=$((16#$(rd $off))); got=$(( (back >> 8) & 0x3f ))
-    (( got == TARGET_SIZE )) || { echo "  ERROR: the card did not accept the size"; return 1; }
-    echo "  confirmed: 64 MB"
+    printf '  ReBAR BAR1 = %d MB -> setting %d MB\n' $((2 ** cur)) $((2 ** TARGET_SIZE))
+    egpu_rebar_set "$DEV" "$off" "$TARGET_SIZE" \
+        || { echo "  ERROR: the card did not accept the size"; return 1; }
+    printf '  confirmed: %d MB\n' $((2 ** TARGET_SIZE))
 }
 
-bar1_assigned() {
-    local v
-    [[ -f /sys/bus/pci/devices/$DEV/resource ]] || return 1
-    v=$(awk 'NR==2 { print $1 }' /sys/bus/pci/devices/$DEV/resource)
-    [[ $v != 0x0000000000000000 ]]
-}
+bar1_assigned() { egpu_bar_assigned "$DEV" 1; }
 
 show_state() {
-    echo "  --- BAR-y ---"
+    echo "  --- BARs ---"
     awk 'NR<=4 { printf "    BAR%d start=%s flags=%s\n", NR-1, $1, $3 }' \
         /sys/bus/pci/devices/$DEV/resource 2>/dev/null || echo "    device not present"
-    echo "  --- window prefetchable ---"
+    echo "  --- prefetchable windows ---"
     # Walk the card's real ancestor chain instead of a written-down list -
     # the chain differs per machine and per Thunderbolt port.
     while read -r b; do

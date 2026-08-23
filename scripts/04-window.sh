@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 5-window.sh - move the root-port prefetchable window above 4 GB, then
+# 04-window.sh - move the root-port prefetchable window above 4 GB, then
 # remove and rescan the Thunderbolt subtree so the kernel lays out the bridge
 # windows and BARs inside it.
 #
@@ -39,7 +39,15 @@
 #
 # To undo everything: REBOOT.
 #
-#   sudo WIN_BASE=0x4010000000 WIN_MB=1024 REBAR_SIZE=8 ./5-window.sh
+# The defaults come from lib/egpu-lib.sh (egpu_window_defaults) and are the
+# SAME ones run.sh and 03-build-module.sh use. They used to be stated separately
+# here, with different values - 0xf0000000/192/7 against the 0x4010000000/1024/8
+# exported by the setup wrapper that used to sit above 03-build-module - so
+# running this script the way its own header documented produced a 128 MB BAR1
+# that run.sh then reported as a failure.
+#
+#   sudo ./scripts/04-window.sh
+#   sudo WIN_BASE=0xf0000000 WIN_MB=192 REBAR_SIZE=7 ./scripts/04-window.sh   # override
 
 set -uo pipefail
 
@@ -48,9 +56,9 @@ SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the package is self-
 # Topology is DISCOVERED, never hardcoded: bus numbers behind a Thunderbolt
 # tunnel shift between machines, between ports and between hot-plugs.
 # shellcheck source=lib/egpu-lib.sh
-source "$SELFDIR/lib/egpu-lib.sh"
+source "$SELFDIR/../lib/egpu-lib.sh"
 if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run ./2-devices.sh to see what is present." >&2
+    echo "Cannot resolve eGPU topology. Run $EGPU_SCRIPTS/02-devices.sh to see what is present." >&2
     exit 1
 fi
 RP=$EGPU_ROOT_PORT           # CPU root port whose prefetchable window we move
@@ -58,44 +66,30 @@ TB=$EGPU_TB_UPSTREAM         # first device below it - removed and rescanned
 DEV=$EGPU_GPU                # the card itself
 AUDIO=${DEV%.*}.1            # its HDMI-audio function, if present
 RESCAN_BUS=$EGPU_SECONDARY_BUS
-MODDIR=$SELFDIR/module
+MODDIR=$EGPU_MODULE
 # The module is built out of tree - module/Makefile explains why. Ask make
 # for the path so it is defined in exactly one place.
 BUILDDIR=$(make --no-print-directory -C "$MODDIR" -s print-builddir 2>/dev/null)
-BUILDDIR=${BUILDDIR:-$SELFDIR/build/module}
+BUILDDIR=${BUILDDIR:-$EGPU_BUILD}
 KO=$BUILDDIR/egpu_rp_window.ko
 
-WIN_BASE=${WIN_BASE:-0xf0000000}
-WIN_MB=${WIN_MB:-192}
+egpu_window_defaults           # WIN_BASE / WIN_MB / REBAR_SIZE - one definition
 WIN_END=$((WIN_BASE + WIN_MB * 1024 * 1024 - 1))
-
-CAP=0xbb0
 TARGET_BAR=1
-TARGET_SIZE=${REBAR_SIZE:-7}   # 2^7 MB = 128 MB
-EXP_CAP_ID=0x0015
 
-LOGDIR=$SELFDIR/logs
-STAMP=$(date +%Y%m%d-%H%M%S)
-KLOG=$LOGDIR/kernel-$STAMP.log
-SLOG=$LOGDIR/script-$STAMP.log
+LOGDIR=$EGPU_LOGS
+STAMP=$(egpu_stamp)            # inherited from run.sh, so one run = one stamp
+# A parent already capturing the kernel log exports EGPU_KLOG; adopt it so the
+# path reported below is the one actually written to.
+KLOG=${EGPU_KLOG:-$LOGDIR/kernel-$STAMP.log}
 
-[[ $EUID -eq 0 ]] || { echo "Run with sudo: sudo $0" >&2; exit 1; }
-mkdir -p "$LOGDIR"; chown "${SUDO_USER:-root}:" "$LOGDIR" 2>/dev/null || true
-exec > >(tee -a "$SLOG") 2>&1
-TEE_PID=$!
-# tee runs in a subprocess; without this a fast exit returns the shell to the
-# prompt before tee flushes anything - the message vanishes from the screen,
-# although it stays in the log. Close the descriptors and wait for tee.
-_flush_tee() { exec 1>&- 2>&- ; wait "$TEE_PID" 2>/dev/null; }
+egpu_require_root
+egpu_log_open "$LOGDIR" script "$STAMP"
+trap egpu_cleanup EXIT
 
-BG=()
-cleanup() { for p in "${BG[@]:-}"; do kill "$p" 2>/dev/null || true; done; sync; }
-trap 'cleanup; _flush_tee' EXIT
-mark() { printf '\n########## %s ##########\n' "$1" >> "$KLOG"; sync; echo ">>> $1"; }
-
-echo "=== logi ==="
+echo "=== logs ==="
 echo "  kernel:  $KLOG"
-echo "  log: $SLOG"
+echo "  script:  $EGPU_LOG"
 
 # ---------------------------------------------------------------- 0
 echo
@@ -104,8 +98,9 @@ echo "=== 0. Preflight checks ==="
 vm=$(modinfo "$KO" | awk '/^vermagic:/ { print $2 }'); run=$(uname -r)
 [[ $vm == "$run" ]] || { echo "  ERROR: module built for $vm, running kernel is $run - rebuild" >&2; exit 1; }
 # The logic here is INVERTED: a match must ABORT.
-# With "lsmod | grep -q", SIGPIPE returned 141, so && never fired and the
-# let execution continue with the module loaded - worse than a false alarm.
+# With "lsmod | grep -q" the pipeline returned 141 on SIGPIPE, so && never fired
+# and execution continued with the module already loaded - worse than a false
+# alarm. Testing the sysfs directory has no pipeline and cannot do that.
 [[ -d /sys/module/egpu_rp_window ]] && { echo "  ERROR: module already loaded - reboot" >&2; exit 1; }
 [[ -d /sys/bus/pci/devices/$DEV ]] || { echo "  ERROR: $DEV not present - plug the enclosure in" >&2; exit 1; }
 printf "  module OK (%s)\n" "$vm"
@@ -139,9 +134,7 @@ if [[ -n $conflict ]]; then
 fi
 echo "  target range is free - no collision"
 
-stdbuf -oL dmesg -w >> "$KLOG" &  BG+=($!)
-( while :; do sync; sleep 0.2; done ) & BG+=($!)
-sleep 1
+egpu_klog_start "$KLOG"
 
 # ---------------------------------------------------------------- 1
 echo
@@ -150,7 +143,7 @@ for d in $DEV $AUDIO; do
     lnk=/sys/bus/pci/devices/$d/driver
     if [[ -L $lnk ]]; then
         drv=$(basename "$(readlink -f "$lnk")")
-        echo "  unbind $d z $drv"; echo "$d" > /sys/bus/pci/drivers/$drv/unbind || true
+        echo "  unbind $d from $drv"; echo "$d" > /sys/bus/pci/drivers/$drv/unbind || true
     else
         echo "  $d no driver bound"
     fi
@@ -161,30 +154,29 @@ compgen -G "/sys/module/nvidia*" >/dev/null && modprobe -r nvidia_drm nvidia_mod
 # ReBAR must be set NOW - after removing the subtree the card leaves sysfs
 # and setpci has nothing to work on.
 echo
-echo "=== 2. ReBAR BAR1 -> 128 MB ==="
-rd() { setpci -s "$DEV" "$(printf '%x' $1).L" 2>/dev/null; }
-hdr=$((16#$(rd $CAP))); cap_id=$((hdr & 0xffff))
-printf "  Extended Cap ID = %#06x\n" "$cap_id"
-(( cap_id == EXP_CAP_ID )) || { echo "  ERROR: not a ReBAR capability" >&2; exit 1; }
-ctrl0=$((16#$(rd $((CAP + 0x08))))); nbars=$(( (ctrl0 >> 5) & 0x7 ))
-entry_off=-1
-for ((i = 0; i < nbars; i++)); do
-    off=$((CAP + 0x08 + 8 * i)); v=$((16#$(rd $off)))
-    (( (v & 0x7) == TARGET_BAR )) && entry_off=$off
-done
-(( entry_off >= 0 )) || { echo "  ERROR: no ReBAR capability entry for BAR1" >&2; exit 1; }
-old=$((16#$(rd $entry_off))); cur=$(( (old >> 8) & 0x3f ))
+printf "=== 2. ReBAR BAR1 -> %d MB ===\n" $((2 ** REBAR_SIZE))
+# The capability OFFSET is discovered by walking the extended capability list.
+# It used to be the literal 0xbb0 - correct on the machine this was developed
+# on, and the last hardware-specific constant left in the package.
+if ! cap=$(egpu_rebar_cap "$DEV"); then
+    echo "  ERROR: the card exposes no Resizable BAR capability" >&2; exit 1
+fi
+printf "  Resizable BAR capability at 0x%x\n" "$cap"
+if ! entry_off=$(egpu_rebar_entry "$DEV" "$TARGET_BAR"); then
+    echo "  ERROR: no ReBAR capability entry for BAR$TARGET_BAR" >&2; exit 1
+fi
+old=$(egpu_pci_dword "$DEV" "$entry_off")
+cur=$(egpu_rebar_get "$DEV" "$entry_off")
 printf "  BAR1 now %d MB" $((2 ** cur))
-if (( cur == TARGET_SIZE )); then
+if (( cur == REBAR_SIZE )); then
     echo " - already at target"
 else
-    new=$(( (old & ~0x00003f00) | (TARGET_SIZE << 8) ))
-    setpci -s "$DEV" "$(printf '%x' $entry_off).L=$(printf '%08x' $new)"
-    back=$((16#$(rd $entry_off))); got=$(( (back >> 8) & 0x3f ))
-    printf " -> ustawiono %d MB\n" $((2 ** got))
-    (( got == TARGET_SIZE )) || { echo "  ERROR: the card did not accept the size" >&2; exit 1; }
+    echo
+    egpu_rebar_set "$DEV" "$entry_off" "$REBAR_SIZE" \
+        || { echo "  ERROR: the card did not accept the size" >&2; exit 1; }
+    printf "  set to %d MB\n" $((2 ** $(egpu_rebar_get "$DEV" "$entry_off")))
 fi
-printf "  TO RESTORE: sudo setpci -s %s %x.L=%08x\n" "$DEV" "$entry_off" "$old"
+printf "  TO RESTORE: sudo setpci -s %s %x.L=%s\n" "$DEV" "$entry_off" "$old"
 
 # ---------------------------------------------------------------- 3
 echo
@@ -213,7 +205,7 @@ dmesg | grep -i egpu_rp_window | tail -8 | sed 's/^.*\] /    /'
 echo
 echo "  prefetchable window of $RP, read from hardware:"
 lspci -vv -s "${RP#0000:}" | grep -i prefetchable | sed 's/^\s*/    /'
-printf "    rejestry: 24.w=%s 26.w=%s 28.l=%s 2c.l=%s\n" \
+printf "    registers: 24.w=%s 26.w=%s 28.l=%s 2c.l=%s\n" \
     "$(setpci -s $RP 24.w)" "$(setpci -s $RP 26.w)" \
     "$(setpci -s $RP 28.l)" "$(setpci -s $RP 2c.l)"
 
@@ -235,7 +227,7 @@ mark "AFTER rescan of the secondary bus"
 
 # ---------------------------------------------------------------- 6
 echo
-echo "=== 6. Wynik ==="
+echo "=== 6. Result ==="
 if [[ ! -d /sys/bus/pci/devices/$DEV ]]; then
     echo "  the card did not come back. Tree:"; lspci -tv 2>/dev/null | head -20 | sed 's/^/    /'
     echo "  Log: $KLOG   (a reboot restores the firmware state)"; exit 1
@@ -248,17 +240,17 @@ while read -r b; do
     printf "    --- %s ---\n" "$b"
     lspci -vv -s "${b#*:}" 2>/dev/null | grep -E 'Memory behind|Prefetchable' | sed 's/^\s*/      /'
 done < <(egpu_ancestors "$DEV")
-bar1=$(awk 'NR==2 { print $1 }' /sys/bus/pci/devices/$DEV/resource)
-sz=$(lspci -vv -s "${DEV#0000:}" | sed -n 's/.*Region 1:.*\[size=\([^]]*\)\].*/\1/p')
+bar1=$(egpu_bar_base "$DEV" 1)
+sz=$(egpu_bar_size "$DEV" 1)
 echo
 if [[ $bar1 == 0x0000000000000000 ]]; then
     echo "  BAR1 UNASSIGNED. Last 'can't assign':"
     grep -E "can't assign|failed to assign" "$KLOG" | tail -12 | sed 's/^.*\] /    /'
 else
     echo "  ================================================"
-    echo "  BAR1 = $bar1  rozmiar $sz"
+    echo "  BAR1 = $bar1  size $sz"
     echo "  ================================================"
-    echo "  Next: sudo ./6-load-driver.sh"
+    echo "  Next: sudo $EGPU_SCRIPTS/05-load-driver.sh"
 fi
 echo
 echo "Log kernel: $KLOG"
