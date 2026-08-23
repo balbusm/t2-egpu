@@ -16,8 +16,8 @@ down.
 ```bash
 cd <package-directory>
 
-sudo ./1-check.sh          # what is in place, what is missing
-sudo ./1-check.sh --fix    # write the missing modprobe.d file
+sudo ./01-check.sh          # what is in place, what is missing
+sudo ./01-check.sh --fix    # write the missing modprobe.d file
 sudo ./run.sh              # bring the card up, make it primary, restart session
 ```
 
@@ -34,7 +34,7 @@ sudo ./run.sh --release    # compositor lets go, session restarts
 sudo ./run.sh --unload     # after logging back in - now it is
 ```
 
-On a new machine, or after reinstalling, **always start with `1-check.sh`**.
+On a new machine, or after reinstalling, **always start with `01-check.sh`**.
 Missing files under `/etc` do not show up as a script error — they show up as
 a machine **reset**. That is why `run.sh` runs the check as a gate and
 aborts before touching hardware.
@@ -42,8 +42,8 @@ aborts before touching hardware.
 If the card is not found, or several are:
 
 ```bash
-./2-devices.sh             # candidates and the topology behind each
-./2-devices.sh --all       # every display controller, internal ones included
+./02-devices.sh             # candidates and the topology behind each
+./02-devices.sh --all       # every display controller, internal ones included
 sudo GPU=0000:07:00.0 ./run.sh
 ```
 
@@ -57,25 +57,25 @@ enclosure loses power: power-cycle the enclosure, then `sudo ./run.sh`.
 | file | role |
 |---|---|
 | `run.sh` | **entry point.** Check gate → window and BARs → link cap → GSP → driver stack → report. With NO arguments it also applies `--restart-ui` and `--primary-gpu`, so the bare command restarts your session and makes the card the compositor's primary GPU — it says so and waits 5 s first. Any flag suppresses both. Teardown lives here too: `--reset`, `--off`, `--release`, `--unload` - all four are handled before topology discovery, so they work with the card already gone |
-| `1-check.sh` | prerequisites: tools, kernel, headers, driver, **effective** modprobe configuration, udev, cmdline, hardware, package integrity. `--fix` writes the canonical modprobe.d file, `--quiet` returns only an exit code |
-| `2-devices.sh` | list external GPU candidates and their topology. Read-only, no root needed |
-| `4-build-module.sh` | root-port window and BARs: rebuild the window module for the running kernel → `5` → `6`. `run.sh` calls it with `--configure-only`, so nothing is loaded; `--no-load` stops even earlier. There is no `3-` — it was a wrapper around this one and was removed |
-| `5-window.sh` | move the prefetchable window above 4 GB, remove and rescan the tunnel subtree |
-| `6-load-driver.sh` | write the `modprobe.d`/udev blocks, prove they are effective, confirm BAR1, pin runtime PM — then load `nvidia` and check `nvidia-smi`. `--configure-only` does everything except the load, which is what `run.sh` wants: the cap has to come first |
-| `7-bar-fallback.sh` | **fallback** — `6` calls it only if BAR1 came out unassigned |
-| `8-link-cap-gsp.sh` | cautious variant: detaches through systemd and captures the kernel log. Also `--off` and `--arm-panic` |
-| `9-check-outputs.sh` | card outputs and whether GSP really started. Read-only |
-| `10-primary-gpu.sh` | **opt-in, verified working.** Make the card the compositor's *primary* GPU via a udev tag, so the monitor on it needs no tunnel round trip. Measured: external **137.9 → 230 fps**, internal **181.1 → ~150** — the cost moves, it does not vanish. Applications then land on the card with no offload variables at all. `--on` is this-boot-only, `--on --persist` survives reboot, `--off` clears both. Step 10 in `run.sh`, only with `--primary-gpu` |
-| `11-teardown.sh` | **untested.** Let go of the card so the cable can be pulled with the machine running. `--release` (drop GPU selection, tag the card `mutter-device-ignore`, restart the session — the cable is *not* safe yet), then `--unload` (unload the stack, verify nothing holds it — now it is). `--off` undoes `--release`, `--status` shows who holds the card. Reachable as `run.sh --release` / `--unload` |
+| `01-check.sh` | prerequisites: tools, kernel, headers, driver, **effective** modprobe configuration, udev, cmdline, hardware, package integrity. `--fix` writes the canonical modprobe.d file, `--quiet` returns only an exit code |
+| `02-devices.sh` | list external GPU candidates and their topology. Read-only, no root needed |
+| `03-build-module.sh` | root-port window and BARs: rebuild the window module for the running kernel → `04` → `05`. `run.sh` calls it with `--configure-only`, so nothing is loaded; `--no-load` stops even earlier |
+| `04-window.sh` | move the prefetchable window above 4 GB, remove and rescan the tunnel subtree |
+| `05-load-driver.sh` | write the `modprobe.d`/udev blocks, prove they are effective, confirm BAR1, pin runtime PM — then load `nvidia` and check `nvidia-smi`. `--configure-only` does everything except the load, which is what `run.sh` wants: the cap has to come first |
+| `06-bar-fallback.sh` | **fallback** — `05` calls it only if BAR1 came out unassigned |
+| `07-link-cap-gsp.sh` | cautious variant: detaches through systemd and captures the kernel log. Also `--off` and `--arm-panic` |
+| `08-check-outputs.sh` | card outputs and whether GSP really started. Read-only |
+| `09-primary-gpu.sh` | **opt-in, verified working.** Make the card the compositor's *primary* GPU via a udev tag, so the monitor on it needs no tunnel round trip. Measured: external **137.9 → 230 fps**, internal **181.1 → ~150** — the cost moves, it does not vanish. Applications then land on the card with no offload variables at all. `--on` is this-boot-only, `--on --persist` survives reboot, `--off` clears both. `run.sh` runs it as *its own* step 10, only with `--primary-gpu` — that number is run.sh's internal step, not this file's position |
+| `10-teardown.sh` | **untested.** Let go of the card so the cable can be pulled with the machine running. `--release` (drop GPU selection, tag the card `mutter-device-ignore`, restart the session — the cable is *not* safe yet), then `--unload` (unload the stack, verify nothing holds it — now it is). `--off` undoes `--release`, `--status` shows who holds the card. Reachable as `run.sh --release` / `--unload` |
 | `lib/egpu-lib.sh` | shared topology discovery **and shared plumbing** - reporters, logging with a guaranteed flush, kernel-log capture, the window/ReBAR defaults, link-cap and ReBAR register access. Sourced, not run |
 | `module/` | source of the window module plus its Makefile. Rebuilt on every run |
 | `logs/` | run logs |
 
 `run.sh` is what you invoke. The numbers are the position in the pipeline:
-`1`–`7` execute in order, `8`–`9` are variants and diagnostics, `10`–`11` decide
-what *uses* the card once it is up — who composites, and how to let go of it
-again. The gap at `3` is deliberate: renumbering six files to close it would
-churn every cross-reference in the package for no gain.
+`01`–`06` execute in order, `07`–`08` are variants and diagnostics, `09`–`10`
+decide what *uses* the card once it is up — who composites, and how to let go
+of it again. The numbers are zero-padded so the shell sorts them in execution
+order; `ls` and the table above agree.
 
 ---
 
@@ -92,8 +92,8 @@ The structure of `run.sh` follows from these, and they must not be mixed up:
 
 That is why `run.sh` inserts `NVreg_EnableGpuFirmware=0` as a safety net for
 the duration of the window setup and removes it only once the cap is in place.
-Nothing in that phase loads the driver deliberately — `6-load-driver` is called
-with `--configure-only` — but `5-window` issues a PCI `remove`+`rescan`, and a
+Nothing in that phase loads the driver deliberately — `05-load-driver` is called
+with `--configure-only` — but `04-window` issues a PCI `remove`+`rescan`, and a
 rescan generates add events. An autoload that slipped past the blocks must not
 come up with GSP on.
 
@@ -119,7 +119,7 @@ apply to dependencies — a single `modprobe nvidia_drm` would hit `/bin/false`.
 
 One trap worth watching: **no file in `modprobe.d` may set `options nvidia_drm
 modeset=0` alphabetically AFTER the one that sets `modeset=1`** — the kernel
-takes the last repeated parameter. `1-check.sh` therefore tests the effect of
+takes the last repeated parameter. `01-check.sh` therefore tests the effect of
 the concatenation, not file names.
 
 ---
@@ -148,14 +148,14 @@ the concatenation, not file names.
 - No reference monitor or captured EDID is needed; any display works.
 
 What the package cannot carry for you: kernel parameters. They need a
-bootloader edit and a reboot, so `1-check.sh` only reports them.
+bootloader edit and a reboot, so `01-check.sh` only reports them.
 
-udev rules it *does* carry, and that is worth knowing: `6-load-driver.sh`
+udev rules it *does* carry, and that is worth knowing: `05-load-driver.sh`
 writes `/etc/udev/rules.d/71-nvidia.rules` on every run, shadowing the
 distribution's copy in `/lib` in order to drop the `RUN+=modprobe` lines that
 would load the driver before the cap. The content is Ubuntu-specific
 (`ub-device-create`, `nvidia-persistenced`). Anything that was there before is
-kept once as `71-nvidia.rules.orig`; `1-check.sh` §5 checks the effect either
+kept once as `71-nvidia.rules.orig`; `01-check.sh` §5 checks the effect either
 way.
 
 ---

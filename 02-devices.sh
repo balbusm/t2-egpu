@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 2-devices.sh - list external GPU candidates and the topology behind each.
+# 02-devices.sh - list external GPU candidates and the topology behind each.
 #
 # Read-only. Safe to run at any time, root not required.
 #
@@ -13,9 +13,9 @@
 #   * you want the exact GPU=<bdf> string to paste into another command
 #
 # USAGE
-#   ./2-devices.sh            candidates plus their topology
-#   ./2-devices.sh --all      every display controller, including internal ones
-#   ./2-devices.sh --bdf      print candidate addresses only (for scripting)
+#   ./02-devices.sh            candidates plus their topology
+#   ./02-devices.sh --all      every display controller, including internal ones
+#   ./02-devices.sh --bdf      print candidate addresses only (for scripting)
 
 set -uo pipefail
 SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,7 +60,7 @@ if (( ${#CAND[@]} == 0 )); then
     echo "     Status must say 'connected', not 'disconnected'."
     echo "  3. Does the kernel see anything new?   lspci -t"
     echo "  4. Is the card on a physical slot rather than a tunnel?"
-    echo "     ./2-devices.sh --all"
+    echo "     ./02-devices.sh --all"
     exit 1
 fi
 

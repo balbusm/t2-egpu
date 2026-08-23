@@ -205,7 +205,7 @@ egpu_print_topology() {
 # copies carried a fix. One definition here means a fix lands everywhere.
 #
 # Scripts that need a different dialect define their own AFTER sourcing this
-# file, and theirs wins: 1-check.sh counts pass/fail and honours --quiet, so it
+# file, and theirs wins: 01-check.sh counts pass/fail and honours --quiet, so it
 # keeps its own reporters on purpose.
 # ===========================================================================
 
@@ -251,8 +251,8 @@ EGPU_TEE_PID=
 #
 # NESTING IS THE TRAP HERE, and it is why EGPU_LOG is exported.
 #
-# run.sh calls 4-build-module, which calls 5-window and then execs
-# 6-load-driver, which calls 7-bar-fallback. Every one of them used
+# run.sh calls 03-build-module, which calls 04-window and then execs
+# 05-load-driver, which calls 06-bar-fallback. Every one of them used
 # to open its own tee - and a nested tee does not replace the outer one, it
 # stacks on top of it: the inner script's stdout goes to the inner tee, whose
 # own stdout is still the OUTER tee's pipe. So each line was written once per
@@ -300,8 +300,8 @@ egpu_log_flush() {
 # dmesg -w into a file with a sync every 0.2 s, because on this platform
 # "fallen off the bus" presents as an instant reset with no kernel output and
 # pstore has no backend. Evidence has to be on disk before the reset.
-# Same nesting rule as egpu_log_open, for the same reason: 6-load-driver calls
-# 7-bar-fallback while its own capture is running, and two "dmesg -w" appending
+# Same nesting rule as egpu_log_open, for the same reason: 05-load-driver calls
+# 06-bar-fallback while its own capture is running, and two "dmesg -w" appending
 # to one file interleave every message twice. If a parent is already capturing,
 # adopt its file and start nothing.
 EGPU_BG=()
@@ -342,10 +342,10 @@ mark() {
 # ---------------------------------------------------------------- the window
 #
 # ONE source of truth for the root-port window and the BAR1 size code. These
-# used to be stated in three places with two different values: the old
-# 3-setup wrapper exported 0x4010000000/1024/8 while 5-window.sh defaulted to
-# 0xf0000000/192/7,
-# and 4-build-module.sh printed a third copy as a message. Running 5-window.sh
+# used to be stated in three places with two different values: a setup wrapper
+# that has since been removed exported 0x4010000000/1024/8 while 04-window.sh
+# defaulted to 0xf0000000/192/7,
+# and 03-build-module.sh printed a third copy as a message. Running 04-window.sh
 # the way its own header documents therefore produced a 128 MB BAR1, which
 # run.sh then rejected as a failure.
 EGPU_WIN_BASE_DEFAULT=0x4010000000

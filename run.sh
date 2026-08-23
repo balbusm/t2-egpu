@@ -7,17 +7,17 @@
 #
 # WHAT IT DOES, AND WHY IN THIS ORDER
 #
-#   1-check      prerequisites. Missing files under /etc show up not as an
+#   01-check      prerequisites. Missing files under /etc show up not as an
 #                error but as a machine RESET, so they are verified first.
-#   window+BARs  4-build-module --configure-only: rebuild the window module,
-#                move the root-port window (5-window), write the modprobe.d and
-#                udev blocks and confirm BAR1 (6-load-driver --configure-only).
+#   window+BARs  03-build-module --configure-only: rebuild the window module,
+#                move the root-port window (04-window), write the modprobe.d and
+#                udev blocks and confirm BAR1 (05-load-driver --configure-only).
 #                Loads NOTHING - see constraint 2 below.
 #   link cap     Target Link Speed + Hardware Autonomous Speed Disable on the
 #                bridge above the card.
 #   GSP          firmware enabled, then the driver stack is loaded.
 #
-#   primary GPU  --primary-gpu (step 10, 10-primary-gpu.sh). A udev tag making
+#   primary GPU  --primary-gpu (step 10, 09-primary-gpu.sh). A udev tag making
 #                the card mutter's primary GPU, after which applications render
 #                on it natively.
 #
@@ -32,7 +32,7 @@
 #
 # THREE ORDERING CONSTRAINTS - the whole structure follows from them:
 #
-#   1. the cap must come AFTER 5-window, because remove+rescan destroys and
+#   1. the cap must come AFTER 04-window, because remove+rescan destroys and
 #      recreates the device, discarding any cap applied earlier
 #   2. the cap must come BEFORE nvidia.ko binds, or the driver retrains the
 #      link to Gen4 inside the GSP handshake window and the card falls off the
@@ -41,7 +41,7 @@
 #
 # That is why this script inserts NVreg_EnableGpuFirmware=0 as a safety net for
 # the duration of the window setup and removes it only once the cap is in place:
-# the remove+rescan in 5-window generates PCI add events, and an autoload we
+# the remove+rescan in 04-window generates PCI add events, and an autoload we
 # failed to block must not come up with GSP on.
 #
 # It is also why the window setup runs with --configure-only. It used to end in
@@ -52,13 +52,13 @@
 #
 # The graphical session stays up, so an unexpected reset costs you unsaved
 # work. GSP with the cap is verified, but on a single machine. The cautious
-# variant that detaches from the session is 8-link-cap-gsp.sh.
+# variant that detaches from the session is 07-link-cap-gsp.sh.
 #
 # TOPOLOGY
 #
 # The card, the bridge above it and the root port are discovered, never
 # hardcoded - see lib/egpu-lib.sh. Override with GPU=<bdf> or BRIDGE=<bdf>.
-# Run ./2-devices.sh to list candidates.
+# Run ./02-devices.sh to list candidates.
 #
 # USAGE
 #
@@ -76,7 +76,7 @@
 #                                      #
 #                                      # ANY flag suppresses both defaults.
 #   sudo GPU=<bdf> ./run.sh            # pick a card when several are present
-#                                      (get <bdf> from ./2-devices.sh)
+#                                      (get <bdf> from ./02-devices.sh)
 #   sudo CAP_SPEED=2 ./run.sh        # lower link ceiling (1..4, default 3)
 #   sudo ./run.sh --retrain          # force a link retrain
 #   sudo ./run.sh --no-gsp           # load without GSP
@@ -87,7 +87,7 @@
 #                                    # matters because you reach for it after a
 #                                    # reset, and a reset drops the card out of
 #                                    # the tunnel.
-#   sudo ./run.sh --skip-preflight   # skip the 1-check gate
+#   sudo ./run.sh --skip-preflight   # skip the 01-check gate
 #   sudo ./run.sh --primary-gpu      # make the CARD the compositor's primary
 #                                    # GPU, so the monitor attached to it is
 #                                    # composited and scanned out on the same
@@ -119,7 +119,7 @@
 #                                    # Safe at boot though - the card is absent
 #                                    # then, so the udev rule matches nothing.
 #                                    # Recovery and details:
-#                                    #   ./10-primary-gpu.sh --help
+#                                    #   ./09-primary-gpu.sh --help
 #                                    #
 #                                    # Needs a session restart to take effect;
 #                                    # combine with --restart-ui.
@@ -145,7 +145,7 @@
 #                                    # the nvidia stack and verify nothing
 #                                    # holds the card. NOW the cable can go.
 #
-# Both delegate to 11-teardown.sh, which explains the reasoning and the
+# Both delegate to 10-teardown.sh, which explains the reasoning and the
 # caveats - including that a replug may need a reboot, and that powering the
 # machine off is simpler if you have nothing running outside the session.
 # UNTESTED.
@@ -212,7 +212,7 @@ unload_stack() {
 # --off USED TO BE PARSED WITH THE REST, and that was a real hole: run.sh
 # itself prints "power-cycle the enclosure, then: sudo $0 --off" after the card
 # falls off the bus, which is precisely the state in which the card is absent.
-# The advice could not be followed. 8-link-cap-gsp.sh had this right all along
+# The advice could not be followed. 07-link-cap-gsp.sh had this right all along
 # ("Reverting must ALWAYS work") and this now matches it.
 #
 # WHAT EACH ONE UNDOES:
@@ -220,7 +220,7 @@ unload_stack() {
 #              No driver state whatsoever.
 #   --off      the DRIVER-level configuration: restores the GSP block and
 #              removes the link cap. Ends with "reboot, then run again".
-#   --release  } delegated wholesale to 11-teardown.sh. "exec" keeps this a
+#   --release  } delegated wholesale to 10-teardown.sh. "exec" keeps this a
 #   --unload   } pure front door: one place knows how teardown works.
 
 do_reset() {
@@ -229,10 +229,10 @@ do_reset() {
     local rc=0
     # Compositing first: it is the one that needs root and the one that decides
     # whether the desktop depends on the card at all.
-    if [[ -x $DIR/10-primary-gpu.sh ]]; then
-        "$DIR/10-primary-gpu.sh" --off || rc=1
+    if [[ -x $DIR/09-primary-gpu.sh ]]; then
+        "$DIR/09-primary-gpu.sh" --off || rc=1
     else
-        echo "  ! missing $DIR/10-primary-gpu.sh" >&2; rc=1
+        echo "  ! missing $DIR/09-primary-gpu.sh" >&2; rc=1
     fi
     printf '\n'
     echo "  Compositing returns to the Radeon at the next session restart:"
@@ -277,15 +277,15 @@ do_off() {
 
 for a in "$@"; do case $a in
     -h|--help) egpu_usage "$0"; exit 0 ;;
-    --release) exec "$DIR/11-teardown.sh" --release ;;
-    --unload)  exec "$DIR/11-teardown.sh" --unload ;;
+    --release) exec "$DIR/10-teardown.sh" --release ;;
+    --unload)  exec "$DIR/10-teardown.sh" --unload ;;
     --reset)   do_reset; exit $? ;;
     --off)     do_off;   exit $? ;;
 esac; done
 
 # ---------- FROM HERE ON THE CARD IS REQUIRED ----------
 if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run ./2-devices.sh to see what is present." >&2
+    echo "Cannot resolve eGPU topology. Run ./02-devices.sh to see what is present." >&2
     exit 1
 fi
 # Adopt what discovery found. Skipping this leaves GPU empty, and an empty
@@ -317,7 +317,7 @@ esac; done
 # It restarts the session - every open window is lost - and switches
 # compositing to the eGPU. That switch is verified working here, but it makes
 # the card a single point of failure for the whole desktop. Recovery, if a
-# session ever does not come back: 10-primary-gpu.sh --help.
+# session ever does not come back: 09-primary-gpu.sh --help.
 #
 # PASSING ANY FLAG SUPPRESSES BOTH DEFAULTS, so explicit invocations stay
 # predictable. That also means the two useful subsets need no extra flags -
@@ -359,7 +359,7 @@ if (( DEFAULTS_APPLIED )); then
     info "Verified here: external monitor 137.9 -> 230 fps, internal 181.1 -> ~150"
     warn "the card becomes a single point of failure for the whole desktop"
     info "Recovery if the desktop does not come back:"
-    info "  Ctrl+Alt+F3, then: sudo $DIR/10-primary-gpu.sh --off"
+    info "  Ctrl+Alt+F3, then: sudo $DIR/09-primary-gpu.sh --off"
     info "  followed by:       sudo systemctl restart gdm"
     info "  or just reboot - the rule lives in /run and the card is absent at boot"
     info ""
@@ -443,19 +443,19 @@ fi
 # Missing files under /etc show up not as an error but as a machine RESET, so
 # they are verified BEFORE we touch hardware. --skip-preflight deliberately only.
 if (( ! SKIP_PRE )); then
-    hdr "0. Prerequisites (1-check.sh)"
-    if [[ ! -x $DIR/1-check.sh ]]; then
-        bad "missing $DIR/1-check.sh - package incomplete"; exit 1
+    hdr "0. Prerequisites (01-check.sh)"
+    if [[ ! -x $DIR/01-check.sh ]]; then
+        bad "missing $DIR/01-check.sh - package incomplete"; exit 1
     fi
-    if "$DIR/1-check.sh" --quiet; then
+    if "$DIR/01-check.sh" --quiet; then
         ok "prerequisites satisfied"
     else
         bad "prerequisites NOT satisfied - aborting before touching the hardware"
         echo
-        "$DIR/1-check.sh" | grep -E 'FAIL|missing' || true
+        "$DIR/01-check.sh" | grep -E 'FAIL|missing' || true
         echo
-        info "Full report:   sudo $DIR/1-check.sh"
-        info "Attempt a fix: sudo $DIR/1-check.sh --fix"
+        info "Full report:   sudo $DIR/01-check.sh"
+        info "Attempt a fix: sudo $DIR/01-check.sh --fix"
         info "Skip anyway:   sudo $0 --skip-preflight"
         exit 1
     fi
@@ -484,21 +484,22 @@ hdr "2. Root-port window and BARs"
 if [[ $(bar1) == "$BAR1_WANT" ]]; then
     ok "BAR1 = $BAR1_WANT, window already in place - skipping the window setup"
 else
-    warn "BAR1 not set up - running 4-build-module.sh --configure-only"
+    warn "BAR1 not set up - running 03-build-module.sh --configure-only"
     # --configure-only IS THE POINT. This step used to end in "modprobe nvidia"
-    # (through the old 3-setup wrapper) and step 4 below unloaded it again to
-    # apply the cap: a whole load/unload cycle for nothing, and a bind with no
-    # cap in place - the configuration that reset the machine five times. The
-    # driver is now loaded exactly once, in step 7, after the cap.
+    # (through a setup wrapper that has since been removed) and step 4 below
+    # unloaded it again to apply the cap: a whole load/unload cycle for
+    # nothing, and a bind with no cap in place - the configuration that reset
+    # the machine five times. The driver is now loaded exactly once, in
+    # step 7, after the cap.
     #
     # THE GSP BLOCK STAYS, for a different reason than before. Nothing here
-    # loads the driver deliberately any more, but 5-window issues a PCI
+    # loads the driver deliberately any more, but 04-window issues a PCI
     # remove+rescan, and a rescan generates add events. If anything we failed to
     # block autoloads nvidia off one of those, it must not come up with GSP on.
     printf 'options nvidia NVreg_EnableGpuFirmware=0\n' > "$GSPOFF"
     ok "GSP block inserted for the duration of the window setup (safety net)"
-    [[ -x $DIR/4-build-module.sh ]] || { bad "missing $DIR/4-build-module.sh"; exit 1; }
-    if "$DIR/4-build-module.sh" --configure-only; then ok "window setup succeeded"
+    [[ -x $DIR/03-build-module.sh ]] || { bad "missing $DIR/03-build-module.sh"; exit 1; }
+    if "$DIR/03-build-module.sh" --configure-only; then ok "window setup succeeded"
     else bad "window setup failed - no point continuing"; exit 1; fi
     [[ $(bar1) == "$BAR1_WANT" ]] || { bad "BAR1 still != $BAR1_WANT ($(bar1))"; exit 1; }
     # No check for "did something load nvidia anyway" here: step 4 below unloads
@@ -658,16 +659,16 @@ fi
 # starts carrying the whole composited desktop instead of just window buffers.
 # Worth it only if you mostly work on the external monitor - hence opt-in.
 #
-# Must run AFTER the driver is loaded: 10-primary-gpu.sh reads the card's PCI
+# Must run AFTER the driver is loaded: 09-primary-gpu.sh reads the card's PCI
 # IDs from the live device rather than hardcoding them.
 if [[ $PRIMARY_GPU != keep ]]; then
     hdr "10. Compositor's primary GPU (--primary-gpu)"
-    if [[ ! -x $DIR/10-primary-gpu.sh ]]; then
-        warn "missing $DIR/10-primary-gpu.sh - skipping"
+    if [[ ! -x $DIR/09-primary-gpu.sh ]]; then
+        warn "missing $DIR/09-primary-gpu.sh - skipping"
     elif [[ $PRIMARY_GPU == on ]]; then
         # NON-FATAL on purpose: this is an optimisation on top of a card that
         # already works. It must not turn a good bring-up into a failure.
-        if "$DIR/10-primary-gpu.sh" --on; then
+        if "$DIR/09-primary-gpu.sh" --on; then
             (( RESTART_UI )) || {
                 warn "not active yet - it needs a session restart"
                 info "    sudo $0 --restart-ui"
@@ -677,7 +678,7 @@ if [[ $PRIMARY_GPU != keep ]]; then
             warn "could not set the primary GPU - the card is up regardless"
         fi
     else
-        "$DIR/10-primary-gpu.sh" --off || warn "could not remove the primary-GPU override"
+        "$DIR/09-primary-gpu.sh" --off || warn "could not remove the primary-GPU override"
     fi
 fi
 
@@ -686,8 +687,8 @@ if (( RESTART_UI )); then
 fi
 
 hdr "DONE"
-echo "  Check outputs later:  sudo $DIR/9-check-outputs.sh --force"
-echo "  Who composites:       $DIR/10-primary-gpu.sh --status"
+echo "  Check outputs later:  sudo $DIR/08-check-outputs.sh --force"
+echo "  Who composites:       $DIR/09-primary-gpu.sh --status"
 echo "  GPU selection reset:  sudo $0 --reset"
 echo "  Restart the session:  sudo $0 --restart-ui"
 echo "  Revert to no-GSP:     sudo $0 --off"

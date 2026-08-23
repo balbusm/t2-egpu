@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 4-build-module.sh - rebuild the window module, then run 5-window and
-# 6-load-driver. Called by run.sh; usable on its own.
+# 03-build-module.sh - rebuild the window module, then run 04-window and
+# 05-load-driver. Called by run.sh; usable on its own.
 #
 # WHY REBUILD EVERY TIME
 #
@@ -12,20 +12,20 @@
 #
 #   1. sanity-check the card is on the bus
 #   2. make clean all in module/, verify vermagic against the running kernel
-#   3. 5-window.sh      - move the root-port window, remove+rescan, assign BARs
-#   4. only if BAR1 came out assigned: 6-load-driver.sh
+#   3. 04-window.sh      - move the root-port window, remove+rescan, assign BARs
+#   4. only if BAR1 came out assigned: 05-load-driver.sh
 #
 # HOW FAR IT GOES
 #
-#   (no argument)       through 6-load-driver, which LOADS the driver. Note
+#   (no argument)       through 05-load-driver, which LOADS the driver. Note
 #                       that the driver then comes up with no link speed cap.
-#   --configure-only    through 6-load-driver --configure-only: /etc is written
+#   --configure-only    through 05-load-driver --configure-only: /etc is written
 #                       and BAR1 confirmed, but nothing is loaded. THIS IS WHAT
 #                       run.sh USES, so that the cap can be applied before the
 #                       driver ever binds.
-#   --no-load           stop after 5-window. Nothing under /etc is touched.
+#   --no-load           stop after 04-window. Nothing under /etc is touched.
 #
-# Variables passed through to 5-window.sh (all optional):
+# Variables passed through to 04-window.sh (all optional):
 #   WIN_BASE   base address of the new prefetchable window
 #   WIN_MB     its size in MB
 #   REBAR_SIZE ReBAR size code for BAR1 (8 = 256 MB)
@@ -36,7 +36,7 @@ SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the package is self-
 # shellcheck source=lib/egpu-lib.sh
 source "$SELFDIR/lib/egpu-lib.sh"
 if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run ./2-devices.sh to see what is present." >&2
+    echo "Cannot resolve eGPU topology. Run ./02-devices.sh to see what is present." >&2
     exit 1
 fi
 
@@ -47,8 +47,8 @@ MODDIR=$SELFDIR/module
 BUILDDIR=$(make --no-print-directory -C "$MODDIR" -s print-builddir 2>/dev/null)
 BUILDDIR=${BUILDDIR:-$SELFDIR/build/module}
 KO=$BUILDDIR/egpu_rp_window.ko
-WINDOW=$SELFDIR/5-window.sh
-DRIVER=$SELFDIR/6-load-driver.sh
+WINDOW=$SELFDIR/04-window.sh
+DRIVER=$SELFDIR/05-load-driver.sh
 DEV=$EGPU_GPU
 MODE=full
 for a in "$@"; do case $a in
@@ -106,24 +106,25 @@ printf "  vermagic: %s\n" "${vm:-none}"
 [[ ${vm:-} == "$RUN" ]] || { echo "  ERROR: the module did not build for $RUN" >&2; exit 1; }
 
 echo
-echo "=== 3. 5-window - root-port window and BARs ==="
-# egpu_window_defaults EXPORTS these, so 5-window inherits them - no need to
+echo "=== 3. 04-window - root-port window and BARs ==="
+# egpu_window_defaults EXPORTS these, so 04-window inherits them - no need to
 # rebuild the environment by hand. It also means there is one statement of the
 # defaults instead of three: this script used to print "0xf0000000, 192 MB, BAR1
-# 128 MB" while the old 3-setup wrapper exported 0x4010000000/1024/8, and the
-# message was unreachable in the normal path anyway.
+# 128 MB" while the setup wrapper that used to sit above this script exported
+# 0x4010000000/1024/8, and the message was unreachable in the normal path
+# anyway.
 egpu_window_defaults
 printf "  window %s +%s MB, BAR1 %s\n" "$WIN_BASE" "$WIN_MB" "$(egpu_bar1_expected)"
 if "$WINDOW"; then
-    echo "  5-window finished"
+    echo "  04-window finished"
 else
-    rc=$?; echo "  5-window returned $rc - not loading the driver" >&2; exit $rc
+    rc=$?; echo "  04-window returned $rc - not loading the driver" >&2; exit $rc
 fi
 
 echo
-echo "=== 4. Gate to 6-load-driver ==="
+echo "=== 4. Gate to 05-load-driver ==="
 if ! egpu_bar_assigned "$DEV" 1; then
-    echo "  BAR1 unassigned - not loading the driver. See the log of 5-window above." >&2
+    echo "  BAR1 unassigned - not loading the driver. See the log of 04-window above." >&2
     exit 1
 fi
 bar1=$(egpu_bar_base "$DEV" 1)
@@ -139,8 +140,8 @@ fi
 
 echo
 if [[ $MODE == configure-only ]]; then
-    echo "=== 5. 6-load-driver --configure-only - write /etc, load nothing ==="
+    echo "=== 5. 05-load-driver --configure-only - write /etc, load nothing ==="
     exec "$DRIVER" --configure-only
 fi
-echo "=== 5. 6-load-driver - block nvidia-drm, modprobe nvidia, check nvidia-smi ==="
+echo "=== 5. 05-load-driver - block nvidia-drm, modprobe nvidia, check nvidia-smi ==="
 exec "$DRIVER"

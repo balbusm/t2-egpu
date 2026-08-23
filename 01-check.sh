@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 1-check.sh - verify prerequisites. Read-only unless --fix is given.
+# 01-check.sh - verify prerequisites. Read-only unless --fix is given.
 #
 # WHY: the package must work after being moved to another machine or after
 # reinstalling the system. Files under /etc are then missing, and they are a
@@ -10,9 +10,9 @@
 # needs a GRUB edit and a reboot, so it is only reported, never changed.
 #
 # USAGE:
-#   sudo ./1-check.sh          # report
-#   sudo ./1-check.sh --fix    # + write the missing modprobe.d file
-#   ./1-check.sh --quiet       # exit code only (0 = ready)
+#   sudo ./01-check.sh          # report
+#   sudo ./01-check.sh --fix    # + write the missing modprobe.d file
+#   ./01-check.sh --quiet       # exit code only (0 = ready)
 #
 # EXIT CODE: 0 = everything critical is in place, 1 = something critical is missing.
 
@@ -46,8 +46,8 @@ MODPROBE_D=/etc/modprobe.d
 # Most of this file checks the NVIDIA proprietary driver, and rightly so - the
 # reset this package exists to avoid is an NVIDIA/GSP failure mode. But
 # lib/egpu-lib.sh recognises AMD and Intel cards as well, and run.sh uses
-# "1-check --quiet" as a hard gate. Written as plain fail() these checks made
-# 1-check report "no NVIDIA card on the PCI bus" for a perfectly good AMD eGPU,
+# "01-check --quiet" as a hard gate. Written as plain fail() these checks made
+# 01-check report "no NVIDIA card on the PCI bus" for a perfectly good AMD eGPU,
 # and run.sh then refused to run at all.
 #
 # So: a hard failure when the card is NVIDIA or when no card is present (this
@@ -60,7 +60,7 @@ nvfail() {
 }
 
 say "==================================================================="
-say " 1-check: prerequisites$( ((FIX)) && echo '   [--fix]')"
+say " 01-check: prerequisites$( ((FIX)) && echo '   [--fix]')"
 say " package: $SELFDIR"
 say "==================================================================="
 
@@ -133,7 +133,7 @@ if eff=$(modprobe --dry-run --ignore-install --show-depends nvidia_drm 2>/dev/nu
     if [[ $last == modeset=1 ]]; then
         pass "effective $last - KMS enabled (required for display)"
     else
-        # NOT a blocker: run.sh and 8-link-cap-gsp.sh pass "modeset=1" on the
+        # NOT a blocker: run.sh and 07-link-cap-gsp.sh pass "modeset=1" on the
         # modprobe command line, which is appended last and therefore wins. The
         # conflict only bites something ELSE loading nvidia_drm - a service, a
         # udev rule, or you by hand. Worth fixing, not worth refusing to run.
@@ -235,13 +235,13 @@ if (( MOD_CRIT || MOD_FIXABLE )); then
             # as BRE with a | delimiter, the alternation "\|" collides with the
             # delimiter itself: sed reads it as an escaped @-style separator and
             # the substitution silently matches nothing. It looks like it worked.
-            sed -E -i 's@^(options nvidia_drm .*(modeset|fbdev)=0.*)$@# disabled by 1-check.sh --fix: conflicted with the canonical file\n#\1@' "$f"
+            sed -E -i 's@^(options nvidia_drm .*(modeset|fbdev)=0.*)$@# disabled by 01-check.sh --fix: conflicted with the canonical file\n#\1@' "$f"
             pass "neutralised conflicting modeset=0/fbdev=0 in $(basename "$f")"
         done < <(grep -lsE 'options nvidia_drm .*(modeset|fbdev)=0' "$MODPROBE_D"/*.conf 2>/dev/null)
 
         # 2. write our file under a name that sorts last
         cat > "$CANON" <<'EOF'
-# Written by 1-check.sh --fix. Do not rename to something that sorts earlier:
+# Written by 01-check.sh --fix. Do not rename to something that sorts earlier:
 # modprobe concatenates /etc/modprobe.d alphabetically and the kernel takes the
 # LAST repeated parameter, so this file has to come after everything else.
 #
@@ -338,7 +338,7 @@ hdr "7. Hardware"
 if [[ -z ${EGPU_GPU:-} ]]; then
     fail "no display controller found behind a Thunderbolt/USB4 tunnel"
     info "power-cycle the enclosure, plug the cable in, check: boltctl list"
-    info "see what the kernel does show:  ./2-devices.sh --all"
+    info "see what the kernel does show:  ./02-devices.sh --all"
 else
     pass "card: $EGPU_GPU  $EGPU_VENDOR_NAME"
     info "$EGPU_DESC"
@@ -394,15 +394,15 @@ fi
 
 hdr "9. Package integrity"
 #
-# The list used to be written out by hand and had fallen behind: 10-primary-gpu,
-# 11-teardown and lib/egpu-lib.sh were all missing from it, and run.sh execs the
+# The list used to be written out by hand and had fallen behind: 09-primary-gpu,
+# 10-teardown and lib/egpu-lib.sh were all missing from it, and run.sh execs the
 # first two and sources the third. The required set is still explicit - a glob
 # cannot notice a file that is absent - but anything matching the numbered
 # pattern is additionally checked for the execute bit, so a new script cannot be
 # silently non-executable.
-for f in run.sh 1-check.sh 2-devices.sh 4-build-module.sh 5-window.sh \
-         6-load-driver.sh 7-bar-fallback.sh 8-link-cap-gsp.sh 9-check-outputs.sh \
-         10-primary-gpu.sh 11-teardown.sh; do
+for f in run.sh 01-check.sh 02-devices.sh 03-build-module.sh 04-window.sh \
+         05-load-driver.sh 06-bar-fallback.sh 07-link-cap-gsp.sh 08-check-outputs.sh \
+         09-primary-gpu.sh 10-teardown.sh; do
     [[ -x $SELFDIR/$f ]] && pass "$f" || fail "$f - missing or not executable"
 done
 for f in lib/egpu-lib.sh module/egpu_rp_window.c module/Makefile; do

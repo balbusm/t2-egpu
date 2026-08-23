@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 5-window.sh - move the root-port prefetchable window above 4 GB, then
+# 04-window.sh - move the root-port prefetchable window above 4 GB, then
 # remove and rescan the Thunderbolt subtree so the kernel lays out the bridge
 # windows and BARs inside it.
 #
@@ -40,13 +40,14 @@
 # To undo everything: REBOOT.
 #
 # The defaults come from lib/egpu-lib.sh (egpu_window_defaults) and are the
-# SAME ones run.sh and 4-build-module.sh use. They used to be stated separately
-# here, with different values - 0xf0000000/192/7 against the old 3-setup
-# wrapper's 0x4010000000/1024/8 - so running this script the way its own header
-# documented produced a 128 MB BAR1 that run.sh then reported as a failure.
+# SAME ones run.sh and 03-build-module.sh use. They used to be stated separately
+# here, with different values - 0xf0000000/192/7 against the 0x4010000000/1024/8
+# exported by the setup wrapper that used to sit above 03-build-module - so
+# running this script the way its own header documented produced a 128 MB BAR1
+# that run.sh then reported as a failure.
 #
-#   sudo ./5-window.sh
-#   sudo WIN_BASE=0xf0000000 WIN_MB=192 REBAR_SIZE=7 ./5-window.sh   # override
+#   sudo ./04-window.sh
+#   sudo WIN_BASE=0xf0000000 WIN_MB=192 REBAR_SIZE=7 ./04-window.sh   # override
 
 set -uo pipefail
 
@@ -57,7 +58,7 @@ SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the package is self-
 # shellcheck source=lib/egpu-lib.sh
 source "$SELFDIR/lib/egpu-lib.sh"
 if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run ./2-devices.sh to see what is present." >&2
+    echo "Cannot resolve eGPU topology. Run ./02-devices.sh to see what is present." >&2
     exit 1
 fi
 RP=$EGPU_ROOT_PORT           # CPU root port whose prefetchable window we move
@@ -249,7 +250,7 @@ else
     echo "  ================================================"
     echo "  BAR1 = $bar1  size $sz"
     echo "  ================================================"
-    echo "  Next: sudo ./6-load-driver.sh"
+    echo "  Next: sudo ./05-load-driver.sh"
 fi
 echo
 echo "Log kernel: $KLOG"

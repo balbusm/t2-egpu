@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 8-link-cap-gsp.sh - the cautious variant of the link cap plus GSP.
+# 07-link-cap-gsp.sh - the cautious variant of the link cap plus GSP.
 #
 # run.sh does the same thing inline and is what you normally want. Use this
 # one when a run might hang the machine: it detaches itself as a systemd unit,
@@ -35,11 +35,11 @@
 #
 # USAGE
 #
-#   sudo ./8-link-cap-gsp.sh              # Gen3 + bit 5, GSP on
-#   sudo CAP_SPEED=2 ./8-link-cap-gsp.sh  # Gen2 ceiling
-#   sudo ./8-link-cap-gsp.sh --retrain    # force a retrain as well
-#   sudo ./8-link-cap-gsp.sh --off        # revert: GSP off, cap removed
-#   sudo ./8-link-cap-gsp.sh --arm-panic  # panic on kernel stall (diagnostics)
+#   sudo ./07-link-cap-gsp.sh              # Gen3 + bit 5, GSP on
+#   sudo CAP_SPEED=2 ./07-link-cap-gsp.sh  # Gen2 ceiling
+#   sudo ./07-link-cap-gsp.sh --retrain    # force a retrain as well
+#   sudo ./07-link-cap-gsp.sh --off        # revert: GSP off, cap removed
+#   sudo ./07-link-cap-gsp.sh --arm-panic  # panic on kernel stall (diagnostics)
 
 set -uo pipefail
 
@@ -47,7 +47,7 @@ SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the package is self-
 # shellcheck source=lib/egpu-lib.sh
 source "$SELFDIR/lib/egpu-lib.sh"
 if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run ./2-devices.sh to see what is present." >&2
+    echo "Cannot resolve eGPU topology. Run ./02-devices.sh to see what is present." >&2
     exit 1
 fi
 # Adopt what discovery found. Skipping this leaves GPU empty, and an empty
@@ -60,10 +60,10 @@ GSPOFF=/etc/modprobe.d/zzzz-egpu-gsp-off.conf
 SYSCTL=/etc/sysctl.d/99-egpu-panic.conf
 LOGDIR=$SELFDIR/logs
 STAMP=$(egpu_stamp)
-# Named after THIS script. The logs used to be written as "7-link-cap-*", left
-# over from before the renumbering, which made them look like output of
-# 7-bar-fallback.sh.
-KLOG=$LOGDIR/8-link-cap-kernel-$STAMP.log
+# Named after THIS script, so a stray log cannot be mistaken for another
+# step's output. Its own kernel log, separate from the bring-up's: this script
+# is a standalone variant, not part of the 01-06 chain.
+KLOG=$LOGDIR/07-link-cap-kernel-$STAMP.log
 
 CAP_SPEED=${CAP_SPEED:-3}          # 1|2|3|4 - Target Link Speed
 WANT_OFF=0
@@ -128,16 +128,16 @@ if (( ! WANT_OFF )) && [[ $MYTTY != /dev/tty[0-9]* && ${EGPU_DETACHED:-0} != 1 ]
     command -v systemd-run >/dev/null || { echo "ERROR: on $MYTTY and systemd-run is missing" >&2; exit 1; }
     echo "You are on $MYTTY. Detaching as a systemd unit (the graphical session will go)."
     echo "When it finishes: Ctrl+Alt+F1, then"
-    echo "  sudo cat \$(ls -t $LOGDIR/8-link-cap-*.log | head -1)"
+    echo "  sudo cat \$(ls -t $LOGDIR/07-link-cap-*.log | head -1)"
     echo "Starting in 5 s (Ctrl+C aborts)..."
     sleep 5
-    exec systemd-run --unit=egpu-8-link-cap-gsp --collect \
+    exec systemd-run --unit=egpu-07-link-cap-gsp --collect \
         -p IgnoreOnIsolate=yes -p Type=oneshot -p TimeoutStartSec=900 \
         -E EGPU_DETACHED=1 -E CAP_SPEED="$CAP_SPEED" \
         -E GPU="$GPU" -E BRIDGE="$BRIDGE" "$0" "$@"
 fi
 
-egpu_log_open "$LOGDIR" 8-link-cap "$STAMP"
+egpu_log_open "$LOGDIR" 07-link-cap "$STAMP"
 trap egpu_cleanup EXIT
 SLOG=$EGPU_LOG
 
@@ -148,7 +148,7 @@ show_link() {
 }
 
 echo "==================================================================="
-echo " 8-link-cap-gsp: $([[ $WANT_OFF == 1 ]] && echo 'REVERT - cap removed, GSP disabled' \
+echo " 07-link-cap-gsp: $([[ $WANT_OFF == 1 ]] && echo 'REVERT - cap removed, GSP disabled' \
                                      || echo "cap Gen$CAP_SPEED + bit5, GSP ENABLED")"
 echo " log: $SLOG   (kernel: $KLOG)"
 echo "==================================================================="

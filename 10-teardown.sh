@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 11-teardown.sh - let go of the card so the cable can be pulled while the
+# 10-teardown.sh - let go of the card so the cable can be pulled while the
 # machine keeps running.
 #
 # UNTESTED. Nothing in this file has been run on this machine. On this platform
@@ -59,7 +59,7 @@
 #
 # ⚠ PLUGGING THE CARD BACK IN, SAME BOOT - READ THIS FIRST
 #
-# 5-window.sh refuses to run when its module is already loaded:
+# 04-window.sh refuses to run when its module is already loaded:
 #
 #     [[ -d /sys/module/egpu_rp_window ]] && { echo "  ERROR: module already loaded - reboot"; exit 1; }
 #
@@ -78,12 +78,12 @@
 #
 # USAGE
 #
-#   sudo ./11-teardown.sh --release    # phase 1, restarts the session
-#   sudo ./11-teardown.sh --unload     # phase 2, after logging back in
-#   sudo ./11-teardown.sh --off        # undo --release without unloading:
+#   sudo ./10-teardown.sh --release    # phase 1, restarts the session
+#   sudo ./10-teardown.sh --unload     # phase 2, after logging back in
+#   sudo ./10-teardown.sh --off        # undo --release without unloading:
 #                                      # the card comes back at the next
 #                                      # session restart
-#   ./11-teardown.sh --status          # who still holds the card
+#   ./10-teardown.sh --status          # who still holds the card
 #
 # Also reachable as: sudo ./run.sh --release | --unload
 
@@ -117,8 +117,8 @@ esac; done
 # failure. It bites exactly the processes that matter, because the ones holding
 # the card tend to have many fds and lose the race reliably: gnome-shell was
 # silently missing from this list until this was rewritten. The same trap is
-# documented at the preflight in 5-window.sh and at section 4 of
-# 9-check-outputs.sh - three times in one package. readlink on each fd has no
+# documented at the preflight in 04-window.sh and at section 4 of
+# 08-check-outputs.sh - three times in one package. readlink on each fd has no
 # pipeline at all.
 holders() {
     local card=$1 p n fd t rnode="" found
@@ -195,7 +195,7 @@ if [[ $MODE == off ]]; then
     if [[ -f $IGNORE_RULE ]]; then
         rm -f "$IGNORE_RULE" && ok "removed $IGNORE_RULE"
         udevadm control --reload 2>/dev/null && ok "udev rules reloaded"
-        # Same reason as in 10-primary-gpu.sh --off: a reload only affects future
+        # Same reason as in 09-primary-gpu.sh --off: a reload only affects future
         # events, so without a trigger the tag stays on the live device and the
         # next session still ignores the card.
         udevadm trigger --subsystem-match=drm 2>/dev/null && ok "drm devices retriggered"
@@ -266,7 +266,7 @@ if [[ $MODE == unload ]]; then
     echo "    - the card's BARs: still assigned. They go away when the device"
     echo "      leaves the PCI tree, i.e. when you pull the cable."
     echo
-    echo "  Before you plan on using the card again this boot: 5-window.sh"
+    echo "  Before you plan on using the card again this boot: 04-window.sh"
     echo "  refuses to run while egpu_rp_window is loaded, so a replug may"
     echo "  need a reboot. UNTESTED - see the header of this script."
     exit 0
@@ -286,10 +286,10 @@ ok "$EGPU_CARD  $EGPU_CARD_BDF  vendor=$EGPU_CARD_VENDOR device=$EGPU_CARD_DEVIC
 hdr "Dropping the primary-GPU override"
 # Pointless once the card is going away, and leaving it in place would point a
 # fresh session at a device that is about to vanish.
-if [[ -x $DIR/10-primary-gpu.sh ]]; then
-    "$DIR/10-primary-gpu.sh" --off | sed 's/^/  /' || warn "could not clear the primary-GPU override"
+if [[ -x $DIR/09-primary-gpu.sh ]]; then
+    "$DIR/09-primary-gpu.sh" --off | sed 's/^/  /' || warn "could not clear the primary-GPU override"
 else
-    warn "missing $DIR/10-primary-gpu.sh"
+    warn "missing $DIR/09-primary-gpu.sh"
 fi
 
 hdr "Tagging the card as ignored"

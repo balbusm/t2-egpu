@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 9-check-outputs.sh - what the card's outputs see, and whether GSP is really
+# 08-check-outputs.sh - what the card's outputs see, and whether GSP is really
 # running. Read-only, safe to repeat, no reload needed.
 #
 # WHY SEPARATE
@@ -22,8 +22,8 @@
 # 0x12 = MODE_DEFAULT | POLICY_ALLOW_UNSIGNED only means "the driver decides".
 # Proof is a non-empty GSP Firmware Version from nvidia-smi -q.
 #
-#   sudo ./9-check-outputs.sh
-#   sudo ./9-check-outputs.sh --force   # force a re-detect on every connector
+#   sudo ./08-check-outputs.sh
+#   sudo ./08-check-outputs.sh --force   # force a re-detect on every connector
 
 set -uo pipefail
 SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -85,8 +85,8 @@ echo "=== 4. AUX/EDID errors from nvidia-modeset ==="
 # CAPTURED, NOT PIPED INTO "grep -q". It used to end in "| grep -q ." with an
 # empty then-branch, so grep consumed the messages and the section printed
 # NOTHING whenever there actually were errors - the exact opposite of what it is
-# for. Same family of mistake as the pipefail/grep -q traps noted in 5-window.sh
-# and 11-teardown.sh.
+# for. Same family of mistake as the pipefail/grep -q traps noted in 04-window.sh
+# and 10-teardown.sh.
 aux=$(dmesg | grep -i 'nvidia-modeset' | grep -iE 'edid|aux' | tail -8 | sed 's/^.*\] /  /')
 if [[ -n $aux ]]; then
     printf '%s\n' "$aux"

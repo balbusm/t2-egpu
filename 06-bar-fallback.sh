@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 7-bar-fallback.sh - fallback when BAR1 came out unassigned. Called by
-# 6-load-driver.sh, not run directly in a normal bring-up.
+# 06-bar-fallback.sh - fallback when BAR1 came out unassigned. Called by
+# 05-load-driver.sh, not run directly in a normal bring-up.
 #
 # WHAT IT DOES
 #
@@ -21,20 +21,20 @@ SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the package is self-
 # shellcheck source=lib/egpu-lib.sh
 source "$SELFDIR/lib/egpu-lib.sh"
 if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run ./2-devices.sh to see what is present." >&2
+    echo "Cannot resolve eGPU topology. Run ./02-devices.sh to see what is present." >&2
     exit 1
 fi
 
 
 DEV=$EGPU_GPU
 TARGET_BAR=1
-# Shrink to 64 MB, half of what 5-window asks for: the point of this script is
+# Shrink to 64 MB, half of what 04-window asks for: the point of this script is
 # to make the request small enough to fit whatever the kernel can still lay out.
 TARGET_SIZE=6                 # 2^6 MB = 64 MB
 
 LOGDIR=$SELFDIR/logs
 STAMP=$(egpu_stamp)
-# 6-load-driver calls this script while its own capture is running and exports
+# 05-load-driver calls this script while its own capture is running and exports
 # EGPU_KLOG; adopting it avoids a second "dmesg -w" on the same file.
 KLOG=${EGPU_KLOG:-$LOGDIR/kernel-$STAMP.log}
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 6-load-driver.sh - keep nvidia_drm and nvidia_modeset out of the way, then
+# 05-load-driver.sh - keep nvidia_drm and nvidia_modeset out of the way, then
 # load nvidia and confirm it talks to the card.
 #
 # WHY THE BLOCKS
@@ -14,8 +14,8 @@
 # its dependencies. That is why the stack is loaded one module at a time,
 # bottom-up: nvidia -> nvidia_uvm -> nvidia_modeset -> nvidia_drm.
 #
-# If BAR1 turns out unassigned at this point, 7-bar-fallback.sh is called to
-# escalate. In a normal run that never happens, because 5-window already
+# If BAR1 turns out unassigned at this point, 06-bar-fallback.sh is called to
+# escalate. In a normal run that never happens, because 04-window already
 # assigned it.
 #
 # TWO PHASES, AND WHY THE SPLIT EXISTS
@@ -41,7 +41,7 @@ SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the package is self-
 # shellcheck source=lib/egpu-lib.sh
 source "$SELFDIR/lib/egpu-lib.sh"
 if ! egpu_resolve "${GPU:-}"; then
-    echo "Cannot resolve eGPU topology. Run ./2-devices.sh to see what is present." >&2
+    echo "Cannot resolve eGPU topology. Run ./02-devices.sh to see what is present." >&2
     exit 1
 fi
 
@@ -50,7 +50,7 @@ DEV=$EGPU_GPU
 LOGDIR=$SELFDIR/logs
 STAMP=$(egpu_stamp)
 KLOG=${EGPU_KLOG:-$LOGDIR/kernel-$STAMP.log}
-FALLBACK=$SELFDIR/7-bar-fallback.sh
+FALLBACK=$SELFDIR/06-bar-fallback.sh
 UDEV_RULE=/etc/udev/rules.d/71-nvidia.rules
 
 CONFIGURE_ONLY=0
@@ -133,8 +133,8 @@ install nvidia_modeset /bin/false
 #      "modprobe nvidia_drm" - the display only worked because callers repeat
 #      modeset=1 on the command line. fbdev=0 was never repeated, so THAT one
 #      simply took effect, unnoticed.
-#   4. It made 1-check.sh report a permanent NOTE, and it undid
-#      "1-check.sh --fix" on every run of this script.
+#   4. It made 01-check.sh report a permanent NOTE, and it undid
+#      "01-check.sh --fix" on every run of this script.
 
 # No D3cold.
 options nvidia NVreg_DynamicPowerManagement=0
@@ -160,7 +160,7 @@ else
     echo "    MISSING - DKMS did not build nvidia for this kernel." >&2
     echo "    Fix: rebuild the driver for the running kernel, e.g." >&2
     echo "      sudo dkms autoinstall -k \"$(uname -r)\"" >&2
-    echo "    Diagnose: sudo ./1-check.sh" >&2
+    echo "    Diagnose: sudo ./01-check.sh" >&2
     exit 1
 fi
 echo
@@ -176,9 +176,9 @@ echo "  OK: DynamicPowerManagement=0"
 echo
 echo "=== 3. BAR1 ==="
 if ! egpu_bar_assigned "$DEV" 1; then
-    echo "  BAR1 unassigned - running 7-bar-fallback.sh"
+    echo "  BAR1 unassigned - running 06-bar-fallback.sh"
     [[ -x $FALLBACK ]] || { echo "  ERROR: missing $FALLBACK" >&2; exit 1; }
-    "$FALLBACK" || { echo "  7-bar-fallback could not do it - aborting" >&2; exit 1; }
+    "$FALLBACK" || { echo "  06-bar-fallback could not do it - aborting" >&2; exit 1; }
 fi
 egpu_bar_assigned "$DEV" 1 || { echo "  ERROR: BAR1 still unassigned" >&2; exit 1; }
 printf '  BAR1 = %s  size %s  OK\n' "$(egpu_bar_base "$DEV" 1)" "$(egpu_bar_size "$DEV" 1)"
@@ -278,7 +278,7 @@ fails with VK_ERROR_UNKNOWN and vulkaninfo segfaults.
 
 Loading nvidia_drm by hand WITHOUT "modeset=1" gives no display, because a
 conflicting "options nvidia_drm modeset=0" may exist in modprobe.d and the
-kernel takes the last repeated parameter. Run ./1-check.sh to see the effective
+kernel takes the last repeated parameter. Run ./01-check.sh to see the effective
 value.
 EOF
 else

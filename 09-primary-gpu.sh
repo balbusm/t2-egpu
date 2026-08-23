@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 10-primary-gpu.sh - make the eGPU the compositor's PRIMARY GPU, so the monitor
+# 09-primary-gpu.sh - make the eGPU the compositor's PRIMARY GPU, so the monitor
 # on the card is driven without crossing the Thunderbolt tunnel at all.
 #
 # READ THIS BEFORE RUNNING IT. This is the one script in the package that can
@@ -109,10 +109,10 @@
 #
 # USAGE
 #
-#   sudo ./10-primary-gpu.sh --on             # this boot only (rule in /run)
-#   sudo ./10-primary-gpu.sh --on --persist   # survives reboot (rule in /etc)
-#   sudo ./10-primary-gpu.sh --off            # remove from BOTH locations
-#   ./10-primary-gpu.sh --status              # what is installed and whether it
+#   sudo ./09-primary-gpu.sh --on             # this boot only (rule in /run)
+#   sudo ./09-primary-gpu.sh --on --persist   # survives reboot (rule in /etc)
+#   sudo ./09-primary-gpu.sh --off            # remove from BOTH locations
+#   ./09-primary-gpu.sh --status              # what is installed and whether it
 #                                            # survives a reboot
 #
 # Neither --on nor --off takes effect until the session restarts. Nothing
@@ -287,7 +287,7 @@ fi
 cat > "$RULE" <<EOF
 # Make the external GPU mutter's primary device, so the monitor attached to it
 # is composited and scanned out on the same card - no Thunderbolt round trip.
-# Written by $DIR/10-primary-gpu.sh
+# Written by $DIR/09-primary-gpu.sh
 #
 # Matching is on PCI vendor:device, not /dev/dri/cardN: card numbering moves on
 # this machine (card0 is a USB display, the eGPU is hot-plugged).
