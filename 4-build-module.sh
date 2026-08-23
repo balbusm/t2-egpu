@@ -71,7 +71,7 @@ trap _flush_tee EXIT
 echo "=== log: $SLOG ==="
 
 echo
-echo "=== 1. Kontrola wstepna ==="
+echo "=== 1. Preflight checks ==="
 printf "  kernel: %s\n" "$RUN"
 modinfo -k "$RUN" nvidia | grep -E '^(filename|version)' | sed 's/^/    /'
 [[ -d /sys/bus/pci/devices/$DEV ]] || { echo "  ERROR: $DEV not present - plug the enclosure in" >&2; exit 1; }

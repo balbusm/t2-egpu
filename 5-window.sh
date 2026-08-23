@@ -99,7 +99,7 @@ echo "  log: $SLOG"
 
 # ---------------------------------------------------------------- 0
 echo
-echo "=== 0. Kontrola wstepna ==="
+echo "=== 0. Preflight checks ==="
 [[ -f $KO ]] || { echo "  ERROR: missing $KO - make -C $MODDIR" >&2; exit 1; }
 vm=$(modinfo "$KO" | awk '/^vermagic:/ { print $2 }'); run=$(uname -r)
 [[ $vm == "$run" ]] || { echo "  ERROR: module built for $vm, running kernel is $run - rebuild" >&2; exit 1; }
