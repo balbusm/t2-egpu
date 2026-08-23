@@ -241,7 +241,9 @@ do_reset() {
     echo "  The card and its driver are untouched. Nothing points at it any"
     echo "  more, which is the state you want before unplugging - but note the"
     echo "  real blocker for that is still nvidia_drm being held by the"
-    echo "  compositor. See 'Hot unplug' in FINDINGS.md."
+    echo "  compositor. Releasing that needs a session restart:"
+    echo "      sudo $0 --release     # then, after logging back in:"
+    echo "      sudo $0 --unload      # only now is the cable safe to pull"
     return $rc
 }
 

@@ -17,8 +17,8 @@
 # mutter opens every DRM device it finds, so it holds the eGPU even when it is
 # not compositing on it. While that fd is open nvidia_drm cannot be unloaded,
 # and pulling the cable is a surprise removal of a device whose driver does not
-# even know it is external (RmCheckForExternalGpu() does not recognise TB5
-# bridges - see FINDINGS.md).
+# even know it is external: RmCheckForExternalGpu() does not recognise TB5
+# bridges.
 #
 # The only supported way to make mutter let go is the mutter-device-ignore udev
 # tag, and udev tags are read when mutter STARTS. There is no live mechanism.
@@ -116,8 +116,10 @@ esac; done
 # pipefail promotes that to the pipeline's status - so a MATCH reads as a
 # failure. It bites exactly the processes that matter, because the ones holding
 # the card tend to have many fds and lose the race reliably: gnome-shell was
-# silently missing from this list until this was rewritten. Mistake #2 in
-# FINDINGS.md, walked into again. readlink on each fd has no pipeline at all.
+# silently missing from this list until this was rewritten. The same trap is
+# documented at the preflight in 5-window.sh and at section 4 of
+# 9-check-outputs.sh - three times in one package. readlink on each fd has no
+# pipeline at all.
 holders() {
     local card=$1 p n fd t rnode="" found
     [[ -n $card ]] || return 0
