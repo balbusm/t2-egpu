@@ -39,8 +39,20 @@
 #
 # To undo everything: REBOOT.
 #
-# The defaults come from lib/egpu-lib.sh (egpu_window_defaults) and are the
-# SAME ones run.sh and 03-build-module.sh use. They used to be stated separately
+# WHERE THE WINDOW GOES IS SEARCHED FOR, NOT WRITTEN DOWN
+#
+# egpu_find_free_window (lib/egpu-lib.sh) reads /proc/iomem and picks the first
+# free, 1 MiB-aligned hole above 4 GB inside one of the host bridge's own
+# apertures - the only place pci_claim_resource() can attach it. So the base is
+# a property of the machine it runs on, discovered per run, rather than the one
+# free hole that happened to exist on the machine this was developed on.
+#
+# Section 0b below then re-verifies the answer against /proc/iomem. That is not
+# redundant: it is the check that catches a hand-supplied WIN_BASE, and the one
+# that still refuses to run if the search ever returns something occupied.
+#
+# The values come from lib/egpu-lib.sh (egpu_window_defaults) and are the SAME
+# ones run.sh and 03-build-module.sh use. They used to be stated separately
 # here, with different values - 0xf0000000/192/7 against the 0x4010000000/1024/8
 # exported by the setup wrapper that used to sit above 03-build-module - so
 # running this script the way its own header documented produced a 128 MB BAR1
@@ -99,14 +111,32 @@ printf "  module OK (%s)\n" "$vm"
 # Confirm the target hole really is free. Read /proc/iomem
 # (as root the real addresses are visible) and look for anything overlapping
 # our range. The "PCI Bus" container is skipped - that is where we sit.
+#
+# INDEPENDENT OF THE SEARCH ON PURPOSE. egpu_find_free_window reads the same
+# file, so for a discovered base this normally cannot fail - but it is the only
+# thing standing between a hand-supplied WIN_BASE and someone else's address
+# space, and if the search is ever wrong this is what reports it instead of
+# corrupting a live mapping.
 echo
-printf "=== 0b. Is %s-%#x free? ===\n" "$WIN_BASE" "$WIN_END"
+printf "=== 0b. Is %s-%#x free?  (base: %s) ===\n" \
+    "$WIN_BASE" "$WIN_END" "${EGPU_WIN_BASE_SOURCE:-?}"
+# "blind" means the layout could not be read at all, so this base is a constant
+# from another machine. Say so: 0b can only prove a range is unoccupied, and
+# with zeroed addresses it cannot even prove that.
+[[ ${EGPU_WIN_BASE_SOURCE:-} == blind ]] && {
+    echo "  WARNING: could not read the memory layout - using the written-down"
+    echo "  base $WIN_BASE. Verified on the machine this was developed on; on"
+    echo "  another one, check 'sudo cat /proc/iomem' and pass WIN_BASE=..."
+}
 conflict=""
 while IFS= read -r line; do
     l="${line#"${line%%[![:space:]]*}"}"          # strip leading spaces
     [[ $l == *" : "* ]] || continue
     range="${l%% : *}"; name="${l#* : }"
-    [[ $range == *-* ]] || continue
+    # Hex-validated, not just "has a dash": "$((16#$x))" on a malformed range
+    # splits into a second word and "set -u" turns that into an abort, so a
+    # single odd line here would kill the run instead of being skipped.
+    [[ $range =~ ^[0-9a-fA-F]+-[0-9a-fA-F]+$ ]] || continue
     s=$((16#${range%%-*})); e=$((16#${range##*-}))
     # the container we sit in - skip
     [[ $name == "PCI Bus 0000:00" ]] && continue
