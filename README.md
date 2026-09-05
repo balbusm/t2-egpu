@@ -65,7 +65,7 @@ run.sh              the entry point - the only thing in the root you run
 scripts/            the numbered steps, in execution order
 lib/egpu-lib.sh     topology discovery and shared plumbing. Sourced, not run
 module/             source of the window module plus its Makefile
-logs/               run logs, one file per bring-up
+logs/               run logs, one file per bring-up. Newest 10 kept
 build/              module build output, regenerated
 ```
 
@@ -95,7 +95,7 @@ from any path and under any directory name.
 | `scripts/10-teardown.sh` | **untested.** Let go of the card so the cable can be pulled with the machine running. `--release` (drop GPU selection, tag the card `mutter-device-ignore`, restart the session — the cable is *not* safe yet), then `--unload` (unload the stack, verify nothing holds it — now it is). `--off` undoes `--release`, `--status` shows who holds the card. Reachable as `run.sh --release` / `--unload` |
 | `lib/egpu-lib.sh` | shared topology discovery **and shared plumbing** — reporters, logging with a guaranteed flush, the GSP kill switch, the KMS load sequence, the mutter udev-rule writer, link-cap and ReBAR register access. Sourced, not run |
 | `module/` | source of the window module plus its Makefile. Rebuilt on every run |
-| `logs/` | run logs |
+| `logs/` | run logs, the last 10 per kind (`EGPU_LOG_KEEP` changes it, `0` keeps everything) |
 
 `run.sh` is what you invoke; the rest live in `scripts/`. The numbers are the
 position in the pipeline:
@@ -165,8 +165,20 @@ the concatenation, not file names.
   works regardless of Thunderbolt port, controller, or bus numbering, and it
   recognises NVIDIA, AMD and Intel display controllers.
 - Machine-specific values go through the environment: `GPU`, `BRIDGE`,
-  `WIN_BASE`, `WIN_MB`, `REBAR_SIZE`, `CAP_SPEED`. `WIN_BASE` and `WIN_MB`
-  describe a hole in the host address map and keep written-down defaults.
+  `WIN_BASE`, `WIN_MB`, `REBAR_SIZE`, `CAP_SPEED`.
+- **`WIN_BASE` is checked against the live memory map, then searched for.** It
+  used to be a written-down `0x4010000000` — a free hole in *this* machine's
+  address map, which is a property of one firmware rather than of the card or of
+  Thunderbolt. `egpu_find_free_window` now reads `/proc/iomem` and picks a free,
+  1 MiB-aligned hole above 4 GB inside one of the host bridge's own apertures —
+  the only place `pci_claim_resource()` can attach the window.
+
+  That constant is still *tried first*, and deliberately so: it is the only base
+  with a bring-up behind it here, and the failure mode on this platform is an
+  instant reset with no kernel output, so "verified in practice" outranks "also
+  unoccupied". The search decides only when it does not fit. `04-window.sh`
+  reports which of the two you got (`preferred`, `discovered`, `override`, or
+  `blind` when the map could not be read — the last one warns).
 - **`REBAR_SIZE` has no default — the BAR1 size is read from the card.** It used
   to be a written-down `8` (256 MB), which is simply what this particular Ada
   card powers up with, so the ReBAR write was a no-op dressed as a decision.
@@ -178,6 +190,11 @@ the concatenation, not file names.
 - One run produces one log. `run.sh` opens it and every script in the chain
   adopts it, because a nested `tee` stacks on the outer one rather than
   replacing it.
+- **Logs rotate: the newest 10 of each kind are kept**, pruned as a new one is
+  opened. Per kind rather than per directory, so a burst of standalone
+  `script-*.log` runs cannot evict the `run-*.log` history. Ordered by name,
+  which is chronological because the stamp is zero-padded, and unlike mtime
+  cannot be perturbed afterwards. `EGPU_LOG_KEEP=0` disables it.
 - No reference monitor or captured EDID is needed; any display works.
 
 What the package cannot carry for you: kernel parameters. They need a

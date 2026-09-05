@@ -262,6 +262,39 @@ egpu_stamp() { printf '%s' "${EGPU_STAMP:-$(date +%Y%m%d-%H%M%S)}"; }
 EGPU_LOG=${EGPU_LOG:-}
 EGPU_TEE_PID=
 
+# ---------------------------------------------------------------- rotation
+#
+# One bring-up writes one log and nothing ever removed them, so the directory
+# grew without limit. Ten is what these are actually used for: comparing a
+# failure against the last few runs that worked. 0 disables rotation.
+EGPU_LOG_KEEP=${EGPU_LOG_KEEP:-10}
+
+# Delete all but the newest $2 logs of one prefix. Sets EGPU_LOG_PRUNED to how
+# many went, so the caller can say so INSIDE the new log rather than before it.
+#
+# PER PREFIX, not per directory: run.sh writes run-*.log while a standalone
+# 04-window writes script-*.log, and pruning them as one pool would let a burst
+# of either kind evict the entire history of the other.
+#
+# ORDERED BY NAME, NOT BY MTIME. The stamp is YYYYmmdd-HHMMSS and zero-padded,
+# so a plain glob already expands oldest-first - and unlike mtime that cannot be
+# perturbed by anything touching the files afterwards. Same reasoning as the
+# zero-padded script numbers.
+EGPU_LOG_PRUNED=0
+egpu_log_prune() {
+    local dir=$1 keep=$2 prefix=$3 f i
+    local -a old=()
+    EGPU_LOG_PRUNED=0
+    (( keep > 0 )) || return 0
+    # "[[ -f ]]" also covers the no-match case, where the glob stays literal.
+    for f in "$dir/$prefix"-*.log; do [[ -f $f ]] && old+=( "$f" ); done
+    (( ${#old[@]} > keep )) || return 0
+    for (( i = 0; i < ${#old[@]} - keep; i++ )); do
+        rm -f "${old[i]}" && (( EGPU_LOG_PRUNED++ ))
+    done
+    return 0
+}
+
 # egpu_log_open <logdir> <prefix> [stamp]  -> sets EGPU_LOG, redirects output.
 #
 # MUST NOT be called inside a command substitution: the "exec" redirect would
@@ -295,10 +328,21 @@ egpu_log_open() {
     # This runs under sudo, so hand the directory back to the invoking user;
     # otherwise the next non-root run cannot write to it.
     chown "${SUDO_USER:-root}:" "$dir" 2>/dev/null || true
+    # BEFORE the redirect, and keeping one fewer than the limit, so that the
+    # file about to be created makes the count exactly EGPU_LOG_KEEP. Pruning
+    # afterwards would race the tee that creates it: the new log could still be
+    # missing from the glob, and the oldest kept file would be deleted instead.
+    #
+    # Only reachable here, never in the inherited branch above - a nested script
+    # adopts the parent's log and must not rotate anything.
+    egpu_log_prune "$dir" $(( EGPU_LOG_KEEP - 1 )) "$prefix"
     exec > >(tee -a "$EGPU_LOG") 2>&1
     # NOT exported: a child must never try to wait on its parent's tee.
     EGPU_TEE_PID=$!
     export EGPU_LOG
+    (( EGPU_LOG_PRUNED )) && printf 'rotation: removed %d old %s log(s), keeping %d\n' \
+        "$EGPU_LOG_PRUNED" "$prefix" "$EGPU_LOG_KEEP"
+    return 0
 }
 
 # tee runs in a subprocess. Without closing our descriptors and waiting for it,
@@ -335,10 +379,158 @@ mark() { echo ">>> $1"; }
 # and 03-build-module.sh printed a third copy as a message. Running 04-window.sh
 # the way its own header documents therefore produced a 128 MB BAR1, which
 # run.sh then rejected as a failure.
-# WIN_BASE and WIN_MB describe a hole in the host address map, not the card, so
-# they keep written-down defaults.
-EGPU_WIN_BASE_DEFAULT=0x4010000000
+# WIN_MB describes how much prefetchable space to claim, not where - it is the
+# one number here that really is a policy choice, so it keeps a written-down
+# default. 1 GB is comfortably more than BAR1+BAR3 of any current card.
 EGPU_WIN_MB_DEFAULT=1024
+
+# THE WINDOW BASE IS NOT A BARE DEFAULT ANY MORE - IT IS CHECKED, THEN SEARCHED.
+#
+# It used to be this constant and nothing else: a free hole in the host address
+# map of the machine this was developed on. That address is not a property of
+# the card or of Thunderbolt, it is a property of one firmware's memory layout -
+# so on another Mac it can be occupied, and it was the last thing in the package
+# that made the answer machine-specific rather than discovered.
+#
+# It is still tried FIRST, and that is deliberate rather than lazy. It is the
+# only base with a bring-up behind it on this hardware, and the failure mode
+# here is an instant machine reset with no kernel output - so "verified in
+# practice" outranks "also unoccupied" when both are available. The search only
+# decides where to go on a machine where this address does not fit, which is
+# exactly the case it was written for.
+#
+# Blind use is the last resort, when the layout cannot be read at all
+# (/proc/iomem unreadable, or its addresses zeroed because we are not root).
+EGPU_WIN_BASE_PREFERRED=0x4010000000
+
+# 1 MiB. A bridge's prefetchable window registers carry address bits 31:20 only
+# (bits 19:0 are implicitly 0 in the base and 1 in the limit), so 1 MiB is the
+# hardware granularity - see egpu_program_window in module/egpu_rp_window.c.
+EGPU_WIN_ALIGN=1048576
+EGPU_FOUR_GB=4294967296
+
+# /proc/iomem's name for the bus the root port sits on, e.g. "PCI Bus 0000:00".
+# Derived from sysfs rather than assumed, because that name is the search space
+# below and a wrong one silently finds nothing.
+egpu_root_bus_name() {
+    local p
+    p=$(basename "$(dirname "$(readlink -f "$PCI_DEVICES/$1" 2>/dev/null)")" 2>/dev/null)
+    [[ $p == pci[0-9]* ]] || return 1
+    printf 'PCI Bus %s\n' "${p#pci}"
+}
+
+# Find a free hole for the root-port window and print its base as 0x...
+#
+#   $1  size wanted, in MB    $2  root port BDF    $3  layout file
+#   $4  preferred base - returned as-is if it fits in any free gap, so a value
+#       already proven on this hardware wins over an equally free but untried
+#       one. Empty means "no preference, take the lowest that fits".
+#
+# WHERE IT IS ALLOWED TO LOOK, AND WHY THAT IS NARROW
+#
+# Not "anywhere unoccupied". The module ends in pci_claim_resource(), which
+# needs the window to have a parent in the root bus resource tree - so the only
+# legal homes are the host bridge's own _CRS apertures, which is what the
+# "PCI Bus 0000:00" entries in /proc/iomem are. A base outside every one of them
+# cannot be claimed however free it looks. On the machine this was developed on
+# the relevant aperture is [mem 0x4000000000-0x7fffffffff], 256 GB, essentially
+# empty - which is why there was a hole to write down in the first place.
+#
+# Above 4 GB only, which is the entire point of moving the window: firmware puts
+# it below 4 GB where it cannot grow, and pci_bus_alloc_resource() would have
+# preferred the high region for a 64-bit window had it ever been asked.
+#
+# WHY THE ROOT PORT'S OWN WINDOW IS NOT AN OBSTACLE
+#
+# Its current prefetchable window shows up as a child of the aperture, named
+# after the root port - and we are about to release it, so counting it as
+# occupied would make the search skip past the very space it is meant to reuse
+# (and pick a different answer on a second run). It is excluded by name.
+#
+# Excluding every child with that name is safe rather than approximate: a
+# bridge's OTHER memory window is architecturally 32-bit - PCI_MEMORY_BASE and
+# PCI_MEMORY_LIMIT have no upper-32 companions - so inside an aperture above
+# 4 GB the root port cannot own anything except the window we are moving.
+egpu_find_free_window() {
+    local want_mb=${1:-$EGPU_WIN_MB_DEFAULT} rp=${2:-} f=${3:-/proc/iomem} prefer=${4:-}
+    local want=$(( want_mb * 1024 * 1024 ))
+    local busname line body lead range name
+    local -a dep=() beg=() end=() nam=()
+
+    [[ -r $f ]] || return 1
+    # Derived where possible, assumed only as a fallback. A root port sits on
+    # the host bridge's own bus, which is 0000:00 on every x86 machine - so the
+    # assumption is safe, but deriving it is still better than trusting that.
+    # An empty $rp fails the derivation cleanly and lands here too.
+    busname=$(egpu_root_bus_name "${rp:-}") || busname="PCI Bus 0000:00"
+
+    # Depth comes from the indentation: /proc/iomem nests a child two spaces
+    # deeper than its parent, and that nesting IS the containment information -
+    # a child's range is inside its parent's.
+    while IFS= read -r line; do
+        body=${line#"${line%%[![:space:]]*}"}
+        lead=$(( ${#line} - ${#body} ))
+        [[ $body == *" : "* ]] || continue
+        range=${body%% : *}; name=${body#* : }
+        # Validate as hex BEFORE the arithmetic below. "$((16#$x))" on anything
+        # that is not clean hex splits into a second word, which under "set -u"
+        # aborts the caller with "unbound variable" - so one unexpected line in
+        # this file would take the whole bring-up down instead of being skipped.
+        [[ $range =~ ^[0-9a-fA-F]+-[0-9a-fA-F]+$ ]] || continue
+        dep+=( $(( lead / 2 )) )
+        beg+=( $((16#${range%%-*})) )
+        end+=( $((16#${range##*-})) )
+        nam+=( "$name" )
+    done < "$f"
+
+    # Every free gap above 4 GB, collected before anything is chosen: the
+    # preferred base has to be checked against ALL of them, and it may well sit
+    # in a later aperture than the first gap that would merely fit.
+    local n=${#dep[@]} i j cursor
+    local -a gap_lo=() gap_hi=()
+    for (( i = 0; i < n; i++ )); do
+        [[ ${nam[i]} == "$busname" ]] || continue
+        # Zeroed addresses mean we are not root and every range reads 0-0. That
+        # is not "no space", it is "no information" - refuse to answer.
+        (( end[i] > beg[i] )) || continue
+        (( end[i] >= EGPU_FOUR_GB )) || continue
+
+        cursor=$(( beg[i] > EGPU_FOUR_GB ? beg[i] : EGPU_FOUR_GB ))
+        cursor=$(( (cursor + EGPU_WIN_ALIGN - 1) / EGPU_WIN_ALIGN * EGPU_WIN_ALIGN ))
+
+        # Direct children only. Anything deeper sits inside one of them and is
+        # already accounted for by its parent's range.
+        for (( j = i + 1; j < n; j++ )); do
+            (( dep[j] > dep[i] )) || break           # left this aperture
+            (( dep[j] == dep[i] + 1 )) || continue
+            [[ ${nam[j]} == "$rp" ]] && continue     # the window we are moving
+            (( end[j] < cursor )) && continue
+            (( beg[j] > cursor )) && { gap_lo+=( "$cursor" ); gap_hi+=( $(( beg[j] - 1 )) ); }
+            cursor=$(( (end[j] + EGPU_WIN_ALIGN) / EGPU_WIN_ALIGN * EGPU_WIN_ALIGN ))
+        done
+
+        # The tail of the aperture, after the last child.
+        (( end[i] >= cursor )) && { gap_lo+=( "$cursor" ); gap_hi+=( "${end[i]}" ); }
+    done
+
+    local k g=${#gap_lo[@]}
+    # The preferred base wins wherever it fits. Alignment is re-checked rather
+    # than assumed: this value can come from a human via WIN_BASE.
+    if [[ -n $prefer ]]; then
+        local p=$(( prefer ))
+        if (( p % EGPU_WIN_ALIGN == 0 )); then
+            for (( k = 0; k < g; k++ )); do
+                (( p >= gap_lo[k] && p + want - 1 <= gap_hi[k] )) \
+                    && { printf '0x%x\n' "$p"; return 0; }
+            done
+        fi
+    fi
+    for (( k = 0; k < g; k++ )); do
+        (( gap_hi[k] + 1 - gap_lo[k] >= want )) \
+            && { printf '0x%x\n' "${gap_lo[k]}"; return 0; }
+    done
+    return 1
+}
 
 # THE BAR1 SIZE IS NOT A DEFAULT ANY MORE - IT IS READ FROM THE CARD.
 #
@@ -364,17 +556,47 @@ egpu_rebar_current() {
 
 # Fill in and export WIN_BASE / WIN_MB / REBAR_SIZE.
 #
-# CALL THIS AFTER egpu_resolve AND AFTER THE ROOT CHECK: asking the card its
-# BAR1 size needs both. Callers that get it wrong land on the fallback, which is
-# a silent wrong answer rather than an error, so the order matters.
+# CALL THIS AFTER egpu_resolve AND AFTER THE ROOT CHECK: the BAR1 size comes
+# from the card's config space and the window base from /proc/iomem, whose
+# addresses read as zero to a non-root reader. Both need root, and both have a
+# fallback, so a caller that gets the order wrong gets a silent written-down
+# answer rather than an error. EGPU_WIN_BASE_SOURCE says which happened.
+# NOT plain "EGPU_WIN_BASE_SOURCE=" - it must survive being inherited, for the
+# same reason EGPU_LOG must: this file gets sourced afresh in every child
+# process, and a bare assignment would wipe the value the parent exported.
+EGPU_WIN_BASE_SOURCE=${EGPU_WIN_BASE_SOURCE:-}
 egpu_window_defaults() {
-    WIN_BASE=${WIN_BASE:-$EGPU_WIN_BASE_DEFAULT}
     WIN_MB=${WIN_MB:-$EGPU_WIN_MB_DEFAULT}
+    # WIN_MB first: the search needs to know how much space to look for.
+    #
+    # INHERITANCE IS THE TRAP HERE, and it is why the source is exported too.
+    #
+    # This function EXPORTS WIN_BASE, and it runs more than once per bring-up:
+    # run.sh resolves it, then 03-build-module and 04-window each call this
+    # again in a child process. Testing WIN_BASE alone cannot tell "the user
+    # asked for this address" from "my parent already worked it out" - so every
+    # child relabelled a searched base as "override", and 04-window, the only
+    # place that PRINTS the label, could therefore never show the truth or fire
+    # the "blind" warning. A decided source travelling with the value fixes it.
+    if [[ -n ${WIN_BASE:-} && -n ${EGPU_WIN_BASE_SOURCE:-} ]]; then
+        : # inherited from a parent that already decided - keep its verdict
+    elif [[ -n ${WIN_BASE:-} ]]; then
+        EGPU_WIN_BASE_SOURCE=override
+    elif WIN_BASE=$(egpu_find_free_window "$WIN_MB" "${EGPU_ROOT_PORT:-}" \
+                        /proc/iomem "$EGPU_WIN_BASE_PREFERRED"); then
+        # Same answer as the constant means the machine matches the one this was
+        # developed on; a different one means the search actually did something.
+        [[ $(( WIN_BASE )) -eq $(( EGPU_WIN_BASE_PREFERRED )) ]] \
+            && EGPU_WIN_BASE_SOURCE=preferred || EGPU_WIN_BASE_SOURCE=discovered
+    else
+        WIN_BASE=$EGPU_WIN_BASE_PREFERRED
+        EGPU_WIN_BASE_SOURCE=blind
+    fi
     if [[ -z ${REBAR_SIZE:-} ]]; then
         REBAR_SIZE=$(egpu_rebar_current "${EGPU_GPU:-}" 1) \
             || REBAR_SIZE=$EGPU_REBAR_SIZE_FALLBACK
     fi
-    export WIN_BASE WIN_MB REBAR_SIZE
+    export WIN_BASE WIN_MB REBAR_SIZE EGPU_WIN_BASE_SOURCE
 }
 
 # The BAR1 size we expect once the window is in place, spelled the way lspci
